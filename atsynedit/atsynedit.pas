@@ -2319,7 +2319,7 @@ uses
   {$endif}
   {$ifdef LCLCOCOA}
   CocoaPrivate,
-  CocoaFullControlEdit, //for ICocoaImeControl
+  //CocoaFullControlEdit, //for ICocoaImeControl
   {$endif}
   ATStringProc_TextBuffer,
   ATSynEdit_Commands,
