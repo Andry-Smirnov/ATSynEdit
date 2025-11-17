@@ -16,10 +16,14 @@ interface
 uses
   {$ifdef Windows}
   Windows,
-  ATSynEdit_Adapter_WindowsIME,
+  ATSynEdit_Adapter_IME_Windows,
   {$endif}
   {$ifdef LCLGTK2}
-  ATSynEdit_Adapter_gtk2IME,
+  ATSynEdit_Adapter_ime_gtk2,
+  {$endif}
+  {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+  qtwidgets,
+  ATSynEdit_Adapter_IME_QT,
   {$endif}
   Messages, //for Win32 and macOS
   InterfaceBase,
@@ -468,13 +472,13 @@ type
 type
   { TATFoldedMark }
 
+  PATFoldedMark = ^TATFoldedMark;
   TATFoldedMark = record
   public
     Coord: TRect;
+    RangeIndex: integer;
     LineFrom, LineTo: integer;
-    procedure Init(const ACoord: TRect; ALineFrom, ALineTo: integer);
-    procedure InitNone;
-    function IsInited: boolean;
+    procedure Init(const ACoord: TRect; ARangeIndex, ALineFrom, ALineTo: integer);
     class operator =(const a, b: TATFoldedMark): boolean;
   end;
 
@@ -482,7 +486,8 @@ type
 
   TATFoldedMarks = class(specialize TFPGList<TATFoldedMark>)
   public
-    function FindByCoord(ACoord: TPoint): TATFoldedMark;
+    function IsIndexValid(AIndex: integer): boolean;
+    function FindByCoord(ACoord: TPoint): integer;
   end;
 
 type
@@ -513,8 +518,6 @@ type
     cInitMaskChar = '*';
     cInitGapBitmapAlignment = taCenter;
     cInitGapBitmapIndent = 0;
-    cInitScrollAnimationSteps = 4;
-    cInitScrollAnimationSleep = 0;
     cInitUndoLimit = 5000;
     cInitUndoMaxCarets = 4000;
     cInitUndoIndentVert = 15;
@@ -740,7 +743,6 @@ type
     FLastCommandDelayedParsingOnLine: integer;
     FLastLineOfSlowEvents: integer;
     FLastUndoTick: QWord;
-    FLastUndoPaused: boolean;
     FLastEnabledUndo: boolean;
     FLastEnabledRedo: boolean;
     FLastCaretY: integer;
@@ -899,7 +901,7 @@ type
     FMicromapBookmarks: boolean;
     FMicromapShowForMinCount: integer;
     FFoldedMarkList: TATFoldedMarks;
-    FFoldedMarkCurrent: TATFoldedMark;
+    FFoldedMarkCurrent: integer;
     FFoldedMarkTooltip: TPanel;
     FPaintCounter: integer;
     FPaintStarted: boolean;
@@ -939,8 +941,6 @@ type
     FOptInputNumberAllowNegative: boolean;
     FOptMaskChar: WideChar;
     FOptMaskCharUsed: boolean;
-    FOptScrollAnimationSteps: integer;
-    FOptScrollAnimationSleep: integer;
     FOptScaleFont: integer;
     FOptIdleInterval: integer;
     FOptPasteAtEndMakesFinalEmptyLine: boolean;
@@ -1213,7 +1213,7 @@ type
     procedure DoStringsOnChangeLog(Sender: TObject; ALine: SizeInt);
     procedure DoStringsOnProgress(Sender: TObject; var ACancel: boolean);
     procedure DoStringsOnUndoAfter(Sender: TObject; AX, AY: SizeInt);
-    procedure DoStringsOnUndoBefore(Sender: TObject; AX, AY: SizeInt);
+    procedure DoStringsOnUndoBefore(Sender: TObject; AX, AY: SizeInt; var ABlockEvent: boolean);
     procedure DoStringsOnUndoTooLongLine(Sender: TObject; AX, AY: SizeInt);
     procedure DoScroll_SetPos(var AScrollInfo: TATEditorScrollInfo; APos: integer);
     procedure DoScroll_LineTop(ALine: integer; AUpdate: boolean);
@@ -1240,8 +1240,8 @@ type
     procedure MenuFoldLevelClick(Sender: TObject);
     procedure MenuFoldUnfoldAllClick(Sender: TObject);
     procedure MenuFoldPlusMinusClick(Sender: TObject);
-    procedure FoldedMarkTooltipPaint(Sender: TObject);
-    procedure FoldedMarkMouseEnter(Sender: TObject);
+    procedure FoldedMarkTooltip_OnPaint(Sender: TObject);
+    procedure FoldedMarkTooltip_OnMouseEnter(Sender: TObject);
     procedure OnNewScrollbarHorzChanged(Sender: TObject);
     procedure OnNewScrollbarVertChanged(Sender: TObject);
     procedure DoPartCalc_CreateNew(var AParts: TATLineParts; AOffsetMax,
@@ -1917,6 +1917,12 @@ type
     //{$endif}
     {$endif}
 
+    {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+    procedure WM_QT_IM_COMPOSITION(var Msg: TLMessage); message LM_IM_COMPOSITION;
+    procedure WM_QT_IM_QueryCaretPos(var Msg: TLMessage); message LM_IM_COMPOSITION+
+      1;
+    {$endif}
+
     {$ifdef LCLCOCOA}
     procedure COCOA_IM_COMPOSITION(var Message: TLMessage); message LM_IM_COMPOSITION;
     {$endif}
@@ -2039,8 +2045,6 @@ type
     property OptInputNumberAllowNegative: boolean read FOptInputNumberAllowNegative write FOptInputNumberAllowNegative default cInitInputNumberAllowNegative;
     property OptMaskChar: WideChar read FOptMaskChar write FOptMaskChar default cInitMaskChar;
     property OptMaskCharUsed: boolean read FOptMaskCharUsed write FOptMaskCharUsed default false;
-    property OptScrollAnimationSteps: integer read FOptScrollAnimationSteps write FOptScrollAnimationSteps default cInitScrollAnimationSteps;
-    property OptScrollAnimationSleep: integer read FOptScrollAnimationSleep write FOptScrollAnimationSleep default cInitScrollAnimationSleep;
     property OptScaleFont: integer read FOptScaleFont write SetOptScaleFont default 0;
     property OptIdleInterval: integer read FOptIdleInterval write FOptIdleInterval default cInitIdleInterval;
     property OptTabSpaces: boolean read FOptTabSpaces write SetTabSpaces default false;
@@ -2329,7 +2333,7 @@ uses
 
 {$ifdef LCLCOCOA}
 //unit was changed to an INC file because of problems with IDE under macOS
-{$I atsynedit_cocoaime.inc}
+{$I atsynedit_adapter_ime_cocoa.inc}
 {$endif}
 
 { TATMinimapThread }
@@ -5264,7 +5268,7 @@ begin
   begin
     NLastFoldedLine:= FFold.ItemPtr(NRangeIndex)^.Y2;
     InitFoldedMarkList;
-    FoldMark.Init(RectMark, APosY, NLastFoldedLine);
+    FoldMark.Init(RectMark, NRangeIndex, APosY, NLastFoldedLine);
     FFoldedMarkList.Add(FoldMark);
   end;
 end;
@@ -5409,6 +5413,10 @@ begin
   FAdapterIME:= TATAdapterGTK2IME.Create;
   {$endif}
 
+  {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+  FAdapterIME:= TATAdapterQTIME.Create;
+  {$endif}
+
   FPaintLocked:= 0;
   FPaintFlags:= [TATEditorInternalFlag.Bitmap];
 
@@ -5498,6 +5506,7 @@ begin
   FMarginRight:= cInitMarginRight;
   FMarginList:= nil;
   FFoldedMarkList:= nil;
+  FFoldedMarkCurrent:= -1;
 
   FPrevCaret.PosX:= 0;
   FPrevCaret.PosY:= 0;
@@ -5511,8 +5520,6 @@ begin
   FOptInputNumberAllowNegative:= cInitInputNumberAllowNegative;
   FOptMaskChar:= cInitMaskChar;
   FOptMaskCharUsed:= false;
-  FOptScrollAnimationSteps:= cInitScrollAnimationSteps;
-  FOptScrollAnimationSleep:= cInitScrollAnimationSleep;
   FOptIdleInterval:= cInitIdleInterval;
 
   FOptAutoPairForMultiCarets:= cInitAutoPairForMultiCarets;
@@ -8030,6 +8037,7 @@ var
   SLink: atString;
   FoldMark: TATFoldedMark;
   MousePnt: TPoint;
+  IndexMark: integer;
 begin
   if not OptMouseEnableAll then exit;
   inherited;
@@ -8040,9 +8048,10 @@ begin
     if Assigned(FFoldedMarkList) and (FFoldedMarkList.Count>0) then
     begin
       MousePnt:= ScreenToClient(Mouse.CursorPos);
-      FoldMark:= FFoldedMarkList.FindByCoord(MousePnt);
-      if FoldMark.IsInited then
+      IndexMark:= FFoldedMarkList.FindByCoord(MousePnt);
+      if FFoldedMarkList.IsIndexValid(IndexMark) then
       begin
+        FoldMark:= FFoldedMarkList.Items[IndexMark];
         DoSelect_LinesByFoldedMark(FoldMark.LineFrom, FoldMark.LineTo);
         exit;
       end;
@@ -9946,6 +9955,21 @@ begin
     FAdapterIME.ImeKillFocus(Self);
 end;
 
+{$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+procedure TATSynEdit.WM_QT_IM_COMPOSITION(var Msg: TLMessage);
+begin
+  if Assigned(FAdapterIME) then
+    FAdapterIME.QTIMComposition(Self, Msg);
+end;
+
+procedure TATSynEdit.WM_QT_IM_QueryCaretPos(var Msg: TLMessage);
+begin
+  if Assigned(FAdapterIME) then
+    FAdapterIME.QTIMQueryCaretPos(Self,Msg);
+end;
+
+{$endif}
+
 {$ifdef LCLGTK2}
 //{$ifdef GTK2_IME_CODE}
 procedure TATSynEdit.WM_GTK_IM_COMPOSITION(var Msg: TLMessage);
@@ -10766,49 +10790,58 @@ end;
 
 
 procedure TATSynEdit.UpdateFoldedMarkTooltip;
+var
+  CurMark: TATFoldedMark;
 begin
-  if (not FFoldTooltipVisible) or not FFoldedMarkCurrent.IsInited then
+  if not FFoldTooltipVisible or
+    not FFoldedMarkList.IsIndexValid(FFoldedMarkCurrent) then
   begin
     if Assigned(FFoldedMarkTooltip) then
       FFoldedMarkTooltip.Hide;
     exit
   end;
 
+  CurMark:= FFoldedMarkList.Items[FFoldedMarkCurrent];
   InitFoldedMarkTooltip;
 
   FFoldedMarkTooltip.Width:= FRectMain.Width * FFoldTooltipWidthPercents div 100;
-  FFoldedMarkTooltip.Height:= Min(FFoldTooltipLineCount, FFoldedMarkCurrent.LineTo-FFoldedMarkCurrent.LineFrom+1) * FCharSize.Y + 1;
+  FFoldedMarkTooltip.Height:= Min(FFoldTooltipLineCount, CurMark.LineTo-CurMark.LineFrom+1) * FCharSize.Y + 1;
   FFoldedMarkTooltip.Left:= Min(
     FRectMain.Right - FFoldedMarkTooltip.Width - 1,
-    FFoldedMarkCurrent.Coord.Left);
+    CurMark.Coord.Left);
   FFoldedMarkTooltip.Top:=
-    FFoldedMarkCurrent.Coord.Top + FCharSize.Y;
+    CurMark.Coord.Top + FCharSize.Y;
 
   //no space for on bottom? show on top
   if FFoldedMarkTooltip.Top + FFoldedMarkTooltip.Height > FRectMain.Bottom then
-    if FFoldedMarkCurrent.Coord.Top - FFoldedMarkTooltip.Height >= FRectMain.Top then
-      FFoldedMarkTooltip.Top:= FFoldedMarkCurrent.Coord.Top - FFoldedMarkTooltip.Height;
+    if CurMark.Coord.Top - FFoldedMarkTooltip.Height >= FRectMain.Top then
+      FFoldedMarkTooltip.Top:= CurMark.Coord.Top - FFoldedMarkTooltip.Height;
 
   FFoldedMarkTooltip.Show;
   FFoldedMarkTooltip.Invalidate;
 end;
 
-procedure TATSynEdit.FoldedMarkTooltipPaint(Sender: TObject);
+procedure TATSynEdit.FoldedMarkTooltip_OnPaint(Sender: TObject);
+var
+  MarkPtr: PATFoldedMark;
 begin
-  if FFoldedMarkCurrent.IsInited then
+  if FFoldedMarkList.IsIndexValid(FFoldedMarkCurrent) then
+  begin
+    MarkPtr:= FFoldedMarkList.InternalGet(FFoldedMarkCurrent);
     DoPaintTextFragment(
       FFoldedMarkTooltip.Canvas,
       Rect(0, 0, FFoldedMarkTooltip.Width, FFoldedMarkTooltip.Height),
-      FFoldedMarkCurrent.LineFrom,
+      MarkPtr^.LineFrom,
       false, //to paint fully folded lines, must be False
       Colors.MinimapTooltipBG,
       Colors.MinimapTooltipBorder,
       0,
       true
       );
+  end;
 end;
 
-procedure TATSynEdit.FoldedMarkMouseEnter(Sender: TObject);
+procedure TATSynEdit.FoldedMarkTooltip_OnMouseEnter(Sender: TObject);
 begin
   if Assigned(FFoldedMarkTooltip) then
     FFoldedMarkTooltip.Hide;
@@ -11085,8 +11118,8 @@ begin
     FFoldedMarkTooltip.Height:= 15;
     FFoldedMarkTooltip.Parent:= Self;
     FFoldedMarkTooltip.BorderStyle:= bsNone;
-    FFoldedMarkTooltip.OnPaint:= @FoldedMarkTooltipPaint;
-    FFoldedMarkTooltip.OnMouseEnter:=@FoldedMarkMouseEnter;
+    FFoldedMarkTooltip.OnPaint:= @FoldedMarkTooltip_OnPaint;
+    FFoldedMarkTooltip.OnMouseEnter:= @FoldedMarkTooltip_OnMouseEnter;
   end;
 end;
 
@@ -11312,18 +11345,20 @@ begin
   end;
 end;
 
-procedure TATSynEdit.DoStringsOnUndoBefore(Sender: TObject; AX, AY: SizeInt);
+procedure TATSynEdit.DoStringsOnUndoBefore(Sender: TObject; AX, AY: SizeInt;
+  var ABlockEvent: boolean);
 var
   OldOption: boolean;
   Tick: QWord;
 begin
-  FLastUndoPaused:= false;
+  ABlockEvent:= true;
 
   if ModeOneLine then exit;
   if FOptUndoPause<=0 then exit;
+  if Carets.Count=0 then exit;
   if Carets.Count>1 then exit;
-  if AY<0 then exit;
-  if AY>=Strings.Count then exit; //must have for the case: big file; Ctrl+A, Del; Undo
+  if not Strings.IsIndexValid(AY) then exit; //must have for the case: big file; Ctrl+A, Del; Undo
+  if Abs(Carets[0].PosY-AY)<=5 then exit; //avoid undo-pause for: typing+Enter+typing+Enter+typing, CudaText issue #6097
   if IsPosInVisibleArea(AX, AY) then exit;
 
   Tick:= GetTickCount64;
@@ -11331,7 +11366,7 @@ begin
     if Tick-FLastUndoTick<FOptUndoPause2 then
       exit;
 
-  FLastUndoPaused:= true;
+  ABlockEvent:= false;
   FLastUndoTick:= Tick;
 
   if FOptUndoPauseHighlightLine then
@@ -11368,14 +11403,9 @@ procedure TATSynEdit.DoStringsOnUndoAfter(Sender: TObject; AX, AY: SizeInt);
 var
   OldOption: boolean;
 begin
-  if not FLastUndoPaused then exit;
-  {
   if ModeOneLine then exit;
   if FOptUndoPause<=0 then exit;
-  if AY<0 then exit;
-  if AY>=Strings.Count then exit; //must have for the case: big file; Ctrl+A, Del; Undo
-  if IsPosInVisibleArea(AX, AY) then exit;
-  }
+  if not Strings.IsIndexValid(AY) then exit;
 
   if FOptUndoPauseHighlightLine then
   begin

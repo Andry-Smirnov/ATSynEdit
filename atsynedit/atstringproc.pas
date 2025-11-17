@@ -128,11 +128,11 @@ function IsStringWithUnicode(const S: UnicodeString): boolean; inline;
 function SCharUpper(ch: WideChar): WideChar; inline;
 function SCharLower(ch: WideChar): WideChar; inline;
 
-function SCaseTitle(const S, SNonWordChars: atString): atString;
-function SCaseInvert(const S: atString): atString;
-function SCaseSentence(const S, SNonWordChars: atString): atString;
-function SCaseUpper(const S: atString): atString;
-function SCaseLower(const S: atString): atString;
+function SConvertCaseToTitle(const S, SNonWordChars: UnicodeString): UnicodeString;
+function SConvertCaseToInverted(const S: UnicodeString): UnicodeString;
+function SConvertCaseToSentence(const S, SNonWordChars: UnicodeString): UnicodeString;
+function SConvertCaseToUpper(const S: UnicodeString): UnicodeString;
+function SConvertCaseToLower(const S: UnicodeString): UnicodeString;
 
 function StringOfCharW(ch: WideChar; Len: SizeInt): UnicodeString;
 
@@ -277,7 +277,7 @@ function SCountTextLines(const Str, StrBreak: UnicodeString): SizeInt;
 procedure SSplitByChar(const S: string; Sep: char; out S1, S2: string);
 procedure SDeleteAndInsert(var AStr: UnicodeString; AFromPos, ACount: SizeInt; const AReplace: UnicodeString);
 procedure SDeleteHtmlTags(var S: string);
-procedure SFixGreekTextAfterCaseConversion(var S: UnicodeString);
+procedure SFixGreekTextAfterCaseConversion(var S: UnicodeString; ALastCharIsWordEdge: boolean);
 
 
 implementation
@@ -1101,7 +1101,7 @@ begin
       Result[i]:= ' ';
 end;
 
-function STrimAll(const S: unicodestring): unicodestring;
+function STrimAll(const S: UnicodeString): UnicodeString;
 var
   Ofs, Len: sizeint;
 begin
@@ -1114,7 +1114,7 @@ begin
   result := Copy(S, Ofs, 1 + Len - Ofs);
 end;
 
-function STrimLeft(const S: unicodestring): unicodestring;
+function STrimLeft(const S: UnicodeString): UnicodeString;
 var
   i,l:sizeint;
 begin
@@ -1125,7 +1125,7 @@ begin
   Result := copy(s, i, l);
 end;
 
-function STrimRight(const S: unicodestring): unicodestring;
+function STrimRight(const S: UnicodeString): UnicodeString;
 var
   l:sizeint;
 begin
@@ -1230,7 +1230,7 @@ begin
 end;
 
 
-function SCaseTitle(const S, SNonWordChars: atString): atString;
+function SConvertCaseToTitle(const S, SNonWordChars: UnicodeString): UnicodeString;
 var
   i: SizeInt;
 begin
@@ -1242,7 +1242,7 @@ begin
       Result[i]:= SCharLower(Result[i]);
 end;
 
-function SCaseInvert(const S: atString): atString;
+function SConvertCaseToInverted(const S: UnicodeString): UnicodeString;
 var
   ch, ch_up: WideChar;
   i: SizeInt;
@@ -1259,7 +1259,7 @@ begin
   end;
 end;
 
-function SCaseUpper(const S: atString): atString;
+function SConvertCaseToUpper(const S: UnicodeString): UnicodeString;
 var
   i: SizeInt;
 begin
@@ -1268,7 +1268,7 @@ begin
     Result[i]:= SCharUpper(Result[i]);
 end;
 
-function SCaseLower(const S: atString): atString;
+function SConvertCaseToLower(const S: UnicodeString): UnicodeString;
 var
   i: SizeInt;
 begin
@@ -1277,7 +1277,7 @@ begin
     Result[i]:= SCharLower(Result[i]);
 end;
 
-function SCaseSentence(const S, SNonWordChars: atString): atString;
+function SConvertCaseToSentence(const S, SNonWordChars: UnicodeString): UnicodeString;
 var
   dot: boolean;
   ch: WideChar;
@@ -1594,7 +1594,8 @@ begin
 end;
 
 
-procedure SFixGreekTextAfterCaseConversion(var S: UnicodeString);
+procedure SFixGreekTextAfterCaseConversion(var S: UnicodeString;
+  ALastCharIsWordEdge: boolean);
 var
   SNonWord: UnicodeString;
   NLen, i: SizeInt;
@@ -1607,7 +1608,10 @@ begin
   i:= 0;
   repeat
     i:= Pos('σ', S, i+1);
-    if i=0 then Break;
+    if i=0 then
+      Break;
+    if (i=NLen) and (not ALastCharIsWordEdge) then
+      Break;
     if ((i=1) or IsCharWord(S[i-1], SNonWord)) and
        ((i=NLen) or not IsCharWord(S[i+1], SNonWord)) then
       S[i]:= 'ς';

@@ -779,7 +779,10 @@ begin
   FChangeBlockActive:= false;
 end;
 
-procedure TATStrings.TextInsertEol(AX, AY: SizeInt; AKeepCaret: boolean; const AStrIndent: atString; out AShift, APosAfter: TPoint);
+procedure TATStrings.TextInsertEol(AX, AY: SizeInt;
+  AKeepCaret, ATrimPrevLine: boolean;
+  const AStrIndent: atString;
+  out AShift, APosAfter: TPoint);
 var
   Str, StrMove: atString;
   NewEnd: TATLineEnds;
@@ -811,7 +814,9 @@ begin
     if AX<Length(Str) then
     begin
       StrMove:= Copy(Str, AX+1, MaxInt);
-      Delete(Str, AX+1, MaxInt);
+      SetLength(Str, AX);
+      if ATrimPrevLine then
+        Str:= STrimRight(Str);
       Lines[AY]:= Str;
     end;
 

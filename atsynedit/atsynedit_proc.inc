@@ -28,37 +28,33 @@ end;
 
 { TATFoldedMarks }
 
-function TATFoldedMarks.FindByCoord(ACoord: TPoint): TATFoldedMark;
+function TATFoldedMarks.IsIndexValid(AIndex: integer): boolean;
+begin
+  Result:= (AIndex>=0) and (AIndex<Count);
+end;
+
+function TATFoldedMarks.FindByCoord(ACoord: TPoint): integer;
 var
-  Mark: TATFoldedMark;
+  MarkPtr: PATFoldedMark;
   i: integer;
 begin
+  Result:= -1;
   for i:= 0 to Count-1 do
   begin
-    Mark:= Items[i];
-    if PtInRect(Mark.Coord, ACoord) then
-      exit(Mark);
+    MarkPtr:= InternalGet(i);
+    if PtInRect(MarkPtr^.Coord, ACoord) then
+      exit(i);
   end;
-  Result.InitNone;
 end;
 
 { TATFoldedMark }
 
-procedure TATFoldedMark.Init(const ACoord: TRect; ALineFrom, ALineTo: integer);
+procedure TATFoldedMark.Init(const ACoord: TRect; ARangeIndex, ALineFrom, ALineTo: integer);
 begin
   Coord:= ACoord;
+  RangeIndex:= ARangeIndex;
   LineFrom:= ALineFrom;
   LineTo:= ALineTo;
-end;
-
-procedure TATFoldedMark.InitNone;
-begin
-  Init(Rect(0, 0, 0, 0), -1, -1);
-end;
-
-function TATFoldedMark.IsInited: boolean;
-begin
-  Result:= LineFrom>=0;
 end;
 
 class operator TATFoldedMark.=(const a, b: TATFoldedMark): boolean;

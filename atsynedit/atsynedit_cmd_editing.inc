@@ -663,11 +663,14 @@ begin
     end;
 
     Str:= GetAutoIndentString(Caret.PosX, Caret.PosY, not bBetterBrackets, bForceIndent);
-    St.TextInsertEol(Caret.PosX, Caret.PosY, AKeepCaret, Str, Shift, PosAfter);
-
-    //after inserting EOL, trim previous line (make it empty if only spaces)
-    if FOptTrimLineOnPressingEnter then
-      St.Lines[Caret.PosY]:= STrimRight(St.Lines[Caret.PosY]);
+    St.TextInsertEol(
+      Caret.PosX,
+      Caret.PosY,
+      AKeepCaret,
+      FOptTrimLineOnPressingEnter,
+      Str,
+      Shift,
+      PosAfter);
 
     //work to move } to next line, leave caret at current line
     if bBetterBrackets then
@@ -1580,16 +1583,17 @@ function TATSynEdit.DoCommand_TextChangeCase(AMode: TATEditorCaseConvert): TATCo
 var
   St: TATStrings;
   Caret: TATCaretItem;
-  Str1, Str2: atString;
+  SPrev, SNew: atString;
   X1, Y1, X2, Y2: integer;
   Shift, PosAfter: TPoint;
-  bSel, bChange: boolean;
+  bSel, bChange, bLastCharIsWordEdge: boolean;
   iCaret, NLastCaret: integer;
 begin
   Result:= [];
   if ModeReadOnly then Exit;
   St:= Strings;
   bChange:= false;
+  bLastCharIsWordEdge:= true;
 
   St.BeginUndoGroup;
   try
@@ -1608,25 +1612,28 @@ begin
         Y2:= Caret.PosY;
       end;
 
-      Str1:= St.TextSubstring(X1, Y1, X2, Y2);
+      SPrev:= St.TextSubstring(X1, Y1, X2, Y2);
+      if St.IsIndexValid(Y2) then
+        bLastCharIsWordEdge:= not ((X2<St.LinesLen[Y2]) and IsCharWord(St.LineCharAt(Y2, X2+1)));
+
       case AMode of
         TATEditorCaseConvert.Lower:
-          Str2:= SCaseLower(Str1);
+          SNew:= SConvertCaseToLower(SPrev);
         TATEditorCaseConvert.Upper:
-          Str2:= SCaseUpper(Str1); //if we use UpperCase than Greek lowercase final-sigma is not converted to uppercase sigma
+          SNew:= SConvertCaseToUpper(SPrev); //if we use UpperCase than Greek lowercase final-sigma is not converted to uppercase sigma
         TATEditorCaseConvert.Title:
-          Str2:= SCaseTitle(Str1, FOptNonWordChars);
+          SNew:= SConvertCaseToTitle(SPrev, FOptNonWordChars);
         TATEditorCaseConvert.Invert:
-          Str2:= SCaseInvert(Str1);
+          SNew:= SConvertCaseToInverted(SPrev);
         TATEditorCaseConvert.Sentence:
-          Str2:= SCaseSentence(Str1, FOptNonWordChars);
+          SNew:= SConvertCaseToSentence(SPrev, FOptNonWordChars);
       end;
 
-      SFixGreekTextAfterCaseConversion(Str2);
+      SFixGreekTextAfterCaseConversion(SNew, bLastCharIsWordEdge);
 
-      if Str1<>Str2 then
+      if SPrev<>SNew then
       begin
-        St.TextReplaceRange(X1, Y1, X2, Y2, Str2, Shift, PosAfter, false);
+        St.TextReplaceRange(X1, Y1, X2, Y2, SNew, Shift, PosAfter, false);
         bChange:= true;
       end;
     end;

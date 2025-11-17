@@ -176,7 +176,8 @@ type
   TATStringsChangeExEvent = procedure(Sender: TObject; AChange: TATLineChangeKind; ALine, AItemCount: SizeInt) of object;
   TATStringsChangeBlockEvent = procedure(Sender: TObject; const AStartPos, AEndPos: TPoint; 
                                  AChange: TATBlockChangeKind; ABlock: TStringList) of object;
-  TATStringsUndoEvent = procedure(Sender: TObject; AX, AY: SizeInt) of object;
+  TATStringsUndoBeforeEvent = procedure(Sender: TObject; AX, AY: SizeInt; var ABlockEvent: boolean) of object;
+  TATStringsUndoAfterEvent = procedure(Sender: TObject; AX, AY: SizeInt) of object;
   TATStringsUnfoldLineEvent = procedure(Sender: TObject; ALine: SizeInt) of object;
   TATStringsProgressEvent = procedure(Sender: TObject; var ACancel: boolean) of object;
 
@@ -228,9 +229,9 @@ type
     FOnChangeLog: TATStringsChangeLogEvent;
     FOnChangeEx: TATStringsChangeExEvent;
     FOnChangeEx2: TATStringsChangeExEvent;
-    FOnUndoBefore: TATStringsUndoEvent;
-    FOnUndoAfter: TATStringsUndoEvent;
-    FOnUndoTooLongLine: TATStringsUndoEvent;
+    FOnUndoBefore: TATStringsUndoBeforeEvent;
+    FOnUndoAfter: TATStringsUndoAfterEvent;
+    FOnUndoTooLongLine: TATStringsUndoAfterEvent;
     FOnChangeBlock: TATStringsChangeBlockEvent;
     FOnUnfoldLine: TATStringsUnfoldLineEvent;
     FChangeBlockActive: boolean;
@@ -425,7 +426,7 @@ type
     procedure TextDeleteRight(AX, AY: SizeInt; ALen: SizeInt; out AShift,
       APosAfter: TPoint; ACanDelEol: boolean=true);
     function TextDeleteRange(AFromX, AFromY, AToX, AToY: SizeInt; out AShift, APosAfter: TPoint): boolean;
-    procedure TextInsertEol(AX, AY: SizeInt; AKeepCaret: boolean;
+    procedure TextInsertEol(AX, AY: SizeInt; AKeepCaret, ATrimPrevLine: boolean;
       const AStrIndent: atString; out AShift, APosAfter: TPoint);
     procedure TextDeleteLine(AX, AY: SizeInt; out AShift, APosAfter: TPoint);
     procedure TextReplace_OneLine(AY, AX1, AX2: SizeInt; const AText: atString);
@@ -475,9 +476,9 @@ type
     property OnChangeEx: TATStringsChangeExEvent read FOnChangeEx write FOnChangeEx;
     property OnChangeEx2: TATStringsChangeExEvent read FOnChangeEx2 write FOnChangeEx2;
     property OnChangeBlock: TATStringsChangeBlockEvent read FOnChangeBlock write FOnChangeBlock;
-    property OnUndoBefore: TATStringsUndoEvent read FOnUndoBefore write FOnUndoBefore;
-    property OnUndoAfter: TATStringsUndoEvent read FOnUndoAfter write FOnUndoAfter;
-    property OnUndoTooLongLine: TATStringsUndoEvent read FOnUndoTooLongLine write FOnUndoTooLongLine;
+    property OnUndoBefore: TATStringsUndoBeforeEvent read FOnUndoBefore write FOnUndoBefore;
+    property OnUndoAfter: TATStringsUndoAfterEvent read FOnUndoAfter write FOnUndoAfter;
+    property OnUndoTooLongLine: TATStringsUndoAfterEvent read FOnUndoTooLongLine write FOnUndoTooLongLine;
     property OnUnfoldLine: TATStringsUnfoldLineEvent read FOnUnfoldLine write FOnUnfoldLine;
   end;
 
@@ -2020,7 +2021,8 @@ var
   NEventX, NEventY: SizeInt;
   bWithoutPause,
   bEnableEventBefore,
-  bEnableEventAfter: boolean;
+  bEnableEventAfter,
+  bBlockEventBefore: boolean;
 begin
   Result:= true;
   ASoftMarked:= true;
@@ -2121,7 +2123,12 @@ begin
 
   if bEnableEventBefore then
     if Assigned(FOnUndoBefore) then
-      FOnUndoBefore(Self, NEventX, NEventY);
+    begin
+      bBlockEventBefore:= false;
+      FOnUndoBefore(Self, NEventX, NEventY, bBlockEventBefore);
+      if bBlockEventBefore then
+        bEnableEventAfter:= false;
+    end;
 
   try
     case CurAction of
@@ -2134,8 +2141,10 @@ begin
               ALineIndexFailed:= CurIndex;
               exit(false);
             end;
-            Lines[CurIndex]:= CurText;
-            LinesState[CurIndex]:= CurLineState;
+            if Lines[CurIndex]<>CurText then //check first, fixing CudaText #6097
+              Lines[CurIndex]:= CurText;
+            if LinesState[CurIndex]<>CurLineState then
+              LinesState[CurIndex]:= CurLineState;
             //force caret to line CurIndex, to fix wrong undo-data after first undo/redo with caret-jump (CudaText #6027)
             if Length(CurCaretsArray)=1 then
               CurCaretsArray[0].Y:= CurIndex;
@@ -2146,8 +2155,10 @@ begin
         begin
           if IsIndexValid(CurIndex) then
           begin
-            LinesEnds[CurIndex]:= CurLineEnd;
-            LinesState[CurIndex]:= CurLineState;
+            if LinesEnds[CurIndex]<>CurLineEnd then
+              LinesEnds[CurIndex]:= CurLineEnd;
+            if LinesState[CurIndex]<>CurLineState then
+              LinesState[CurIndex]:= CurLineState;
             //force caret to line CurIndex, to fix wrong undo-data after first undo/redo with caret-jump (CudaText #6027)
             if Length(CurCaretsArray)=1 then
               CurCaretsArray[0].Y:= CurIndex;
@@ -2164,9 +2175,7 @@ begin
               exit(false);
             end;
             LineDelete(CurIndex, true{AForceLast});
-            //force caret to line CurIndex, to fix wrong undo-data after first undo/redo with caret-jump (CudaText #6027)
-            if Length(CurCaretsArray)=1 then
-              CurCaretsArray[0].Y:= CurIndex;
+            //don't do CurCaretsArray[0].Y:= CurIndex, to fix CudaText #6097 part-2
           end;
         end;
 
@@ -2176,14 +2185,21 @@ begin
           begin
             LineAddRaw(CurText, CurLineEnd);
             ActionFixEolBeforeLast;
+            //fixing CudaText #6097
+            if Length(CurCaretsArray)=0 then
+            begin
+              SetLength(CurCaretsArray, 1);
+              CurCaretsArray[0].X:= 0;
+              CurCaretsArray[0].Y:= CurIndex;
+              CurCaretsArray[0].X2:= -1;
+              CurCaretsArray[0].Y2:= -1;
+            end;
           end
           else
             LineInsertRaw(CurIndex, CurText, CurLineEnd);
           if IsIndexValid(CurIndex) then
             LinesState[CurIndex]:= CurLineState;
-          //force caret to line CurIndex, to fix wrong undo-data after first undo/redo with caret-jump (CudaText #6027)
-          if Length(CurCaretsArray)=1 then
-            CurCaretsArray[0].Y:= CurIndex;
+          //don't do CurCaretsArray[0].Y:= CurIndex, to fix CudaText #6097 part-3
         end;
 
       TATEditAction.Add:
@@ -2519,7 +2535,8 @@ begin
                Break;
              end;
 
-    FEnabledCaretsInUndo:= false;
+    if not ListOther.IsEmpty then //for CudaText #6097 part-3
+      FEnabledCaretsInUndo:= false;
 
     //handle unmodified
     //don't clear FModified if List.IsEmpty! http://synwrite.sourceforge.net/forums/viewtopic.php?f=5&t=2504
@@ -3039,16 +3056,66 @@ begin
   end;
 end;
 
+{
+_MyUnicode* funcs are to be consistent on all platforms.
+FPC's UnicodeCompareStr() is not consistent on Win/Linux.
+}
+function _MyUnicodeCompareStr(const S1, S2: UnicodeString): Integer;
+var
+  C1, C2: UnicodeChar;
+  I, Len: SizeInt;
+begin
+  Len := Min(Length(S1), Length(S2));
+  for I := 1 to Len do
+  begin
+    C1 := S1[I];
+    C2 := S2[I];
+    if C1 <> C2 then
+    begin
+      Result := Ord(C1) - Ord(C2);
+      Exit;
+    end;
+  end;
+  Result := Length(S1) - Length(S2);
+end;
+
+function _MyUnicodeCompareText(const S1, S2: UnicodeString): Integer;
+var
+  C1, C2: UnicodeChar;
+  I, Len: SizeInt;
+begin
+  Len := Min(Length(S1), Length(S2));
+  for I := 1 to Len do
+  begin
+    C1 := UpCase(S1[I]);
+    C2 := UpCase(S2[I]);
+    if C1 <> C2 then
+    begin
+      Result := Ord(C1) - Ord(C2);
+      Exit;
+    end;
+  end;
+  Result := Length(S1) - Length(S2);
+end;
+
+
 function TATStrings.Compare_Asc(Key1, Key2: Pointer): Integer;
 var
   P1, P2: PATStringItem;
 begin
   P1:= PATStringItem(Key1);
   P2:= PATStringItem(Key2);
+
+  Result:= _MyUnicodeCompareStr(P1^.Line, P2^.Line);
+
+  {
+  //this code is bad: if some lines have unicode, and some not -->
+  //resulting order changes on every sort! CudaText issue #6094
   if P1^.Ex.Wide or P2^.Ex.Wide then
     Result:= UnicodeCompareStr(P1^.Line, P2^.Line)
   else
     Result:= CompareStr(P1^.Buf, P2^.Buf);
+    }
 end;
 
 function TATStrings.Compare_AscNoCase(Key1, Key2: Pointer): Integer;
@@ -3057,10 +3124,17 @@ var
 begin
   P1:= PATStringItem(Key1);
   P2:= PATStringItem(Key2);
+
+  Result:= _MyUnicodeCompareText(P1^.Line, P2^.Line);
+
+  {
+  //this code is bad: if some lines have unicode, and some not -->
+  //resulting order changes on every sort! CudaText issue #6094
   if P1^.Ex.Wide or P2^.Ex.Wide then
     Result:= UnicodeCompareText(P1^.Line, P2^.Line)
   else
     Result:= CompareText(P1^.Buf, P2^.Buf);
+    }
 end;
 
 function TATStrings.Compare_Desc(Key1, Key2: Pointer): Integer;
@@ -3118,7 +3192,7 @@ begin
 
   if bAllText then
   begin
-    RemoveEmptyLines;
+    //RemoveEmptyLines; //GitHub user asked to not remove empty lines, issue #6094
     FList.Sort(Func);
     if bWasFakeLine then
       ActionAddFakeLineIfNeeded;
