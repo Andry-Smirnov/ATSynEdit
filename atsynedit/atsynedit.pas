@@ -556,6 +556,9 @@ type
     cInitMicromapOnScrollbar = false;
     cInitMicromapBookmarks = false;
     cInitShowMouseSelFrame = true;
+    cInitShowCurLineMinimal = true;
+    cInitShowCurLineOnlyFocused = false;
+    cInitShowCurLineIfWithoutSel = false;
     cInitMarginRight = 80;
     cInitTabSize = 8;
     cInitNumbersStyle = TATEditorNumbersStyle.Each5th;
@@ -920,7 +923,7 @@ type
     //these options are implemented in CudaText, they are dummy here
     FOptThemed: boolean;
     FOptAutoPairForMultiCarets: boolean;
-    FOptAutoPairChars: string;
+    FOptAutoPairChars: UnicodeString;
     FOptAutoPair_DisableCharDoubling: boolean;
     FOptAutocompleteSymbolsAllowedBeforeCaret: string;
     FOptAutocompleteAutoshowCharCount: integer;
@@ -1350,9 +1353,7 @@ type
       const ACharSize: TATEditorCharSize;
       ACoordY: integer;
       AIndentSize: integer;
-      AColorBG: TColor;
-      AScrollPos: integer;
-      AShowIndentLines: boolean);
+      AScrollPos: integer);
     procedure DoPaintMinimapAllToBGRABitmap;
     procedure DoPaintMinimapTextToBGRABitmap(
       const ARect: TRect;
@@ -1488,8 +1489,8 @@ type
     procedure UpdateClientSizes;
     function DoFormatLineNumber(N: integer): string;
     function UpdateScrollInfoFromMessage(var AInfo: TATEditorScrollInfo; const AMsg: TLMScroll): boolean;
-    procedure UpdateCaretsCoords(AOnlyLast: boolean=false; ASkipInvisible: boolean=false);
-    procedure UpdateMarkersCoords;
+    procedure UpdateCaretsCoords(AOnlyLast: boolean=false; AOnlyForVisibleArea: boolean=false);
+    procedure CalcMarkerCoords(AMarker: PATMarkerItem; out ABegin, AEnd: TATPoint);
     procedure UpdateCharSize(var ACharSize: TATEditorCharSize; C: TCanvas);
     function GetScrollbarVisible(bVertical: boolean): boolean;
     procedure SetMarginRight(AValue: integer);
@@ -1511,7 +1512,7 @@ type
     //editing
     function IsCommandResults_CaretMove(Res: TATCommandResults): boolean;
     function DoCommandCore(ACmd: integer; const AText: atString): TATCommandResults;
-    procedure DoCommandResults(ACmd: integer; Res: TATCommandResults);
+    procedure DoCommandResults(ACmd: integer; ARes: TATCommandResults);
     function DoCommand_TextInsertAtCarets(const AText: atString; AKeepCaret,
       AOvrMode, ASelectThen, AInsertAtLineStarts: boolean): TATCommandResults;
     function DoCommand_ColumnSelectWithoutKey(AValue: boolean): TATCommandResults;
@@ -1772,21 +1773,21 @@ type
       AAllowProximity: boolean=true);
     //bookmarks
     procedure BookmarkSetForLineEx(ALine, ABmKind: integer;
-      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; const ATag: Int64;
+      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; ATag: integer;
       ABookmarksObj: TATBookmarks);
     procedure BookmarkSetForLine(ALine, ABmKind: integer;
-      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; const ATag: Int64);
+      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; ATag: integer);
     procedure BookmarkSetForLine_2(ALine, ABmKind: integer;
-      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; const ATag: Int64);
+      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; ATag: integer);
     procedure BookmarkToggleForLine(ALine, ABmKind: integer;
-      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; const ATag: Int64);
-    procedure BookmarkToggleForCarets(ABmKind: integer; AShowInList: boolean; const ATag: Int64);
+      const AHint: string; AAutoDelete: TATBookmarkAutoDelete; AShowInList: boolean; ATag: integer);
+    procedure BookmarkToggleForCarets(ABmKind: integer; AShowInList: boolean; ATag: integer);
     procedure BookmarkDeleteForLineEx(ALine: integer; ABookmarksObj: TATBookmarks);
     procedure BookmarkDeleteForLine(ALine: integer);
     procedure BookmarkDeleteForLine_2(ALine: integer);
-    function BookmarkDeleteByTagEx(const ATag: Int64; ABookmarksObj: TATBookmarks): boolean;
-    function BookmarkDeleteByTag(const ATag: Int64): boolean;
-    function BookmarkDeleteByTag_2(const ATag: Int64): boolean;
+    function BookmarkDeleteByTagEx(ATag: integer; ABookmarksObj: TATBookmarks): boolean;
+    function BookmarkDeleteByTag(ATag: integer): boolean;
+    function BookmarkDeleteByTag_2(ATag: integer): boolean;
     procedure BookmarkDeleteAll(AWithEvent: boolean=true);
     procedure BookmarkDeleteAll_2;
     procedure BookmarkInvertAll;
@@ -2025,7 +2026,7 @@ type
     //options
     property OptThemed: boolean read FOptThemed write FOptThemed default false;
     property OptAutoPairForMultiCarets: boolean read FOptAutoPairForMultiCarets write FOptAutoPairForMultiCarets default cInitAutoPairForMultiCarets;
-    property OptAutoPairChars: string read FOptAutoPairChars write FOptAutoPairChars stored false;
+    property OptAutoPairChars: UnicodeString read FOptAutoPairChars write FOptAutoPairChars stored false;
     property OptAutoPair_DisableCharDoubling: boolean read FOptAutoPair_DisableCharDoubling write FOptAutoPair_DisableCharDoubling default false;
     property OptAutocompleteSymbolsAllowedBeforeCaret: string read FOptAutocompleteSymbolsAllowedBeforeCaret write FOptAutocompleteSymbolsAllowedBeforeCaret stored false;
     property OptAutocompleteAutoshowCharCount: integer read FOptAutocompleteAutoshowCharCount write FOptAutocompleteAutoshowCharCount default 0;
@@ -2104,9 +2105,9 @@ type
     property OptShowFullWidthForSelection: boolean read FOptShowFullSel write FOptShowFullSel default false;
     property OptShowFullWidthForSyntaxHilite: boolean read FOptShowFullHilite write FOptShowFullHilite default true;
     property OptShowCurLine: boolean read FOptShowCurLine write FOptShowCurLine default false;
-    property OptShowCurLineMinimal: boolean read FOptShowCurLineMinimal write FOptShowCurLineMinimal default true;
-    property OptShowCurLineOnlyFocused: boolean read FOptShowCurLineOnlyFocused write FOptShowCurLineOnlyFocused default false;
-    property OptShowCurLineIfWithoutSel: boolean read FOptShowCurLineIfWithoutSel write FOptShowCurLineIfWithoutSel default true;
+    property OptShowCurLineMinimal: boolean read FOptShowCurLineMinimal write FOptShowCurLineMinimal default cInitShowCurLineMinimal;
+    property OptShowCurLineOnlyFocused: boolean read FOptShowCurLineOnlyFocused write FOptShowCurLineOnlyFocused default cInitShowCurLineOnlyFocused;
+    property OptShowCurLineIfWithoutSel: boolean read FOptShowCurLineIfWithoutSel write FOptShowCurLineIfWithoutSel default cInitShowCurLineIfWithoutSel;
     property OptShowCurColumn: boolean read FOptShowCurColumn write FOptShowCurColumn default false;
     property OptKeepSelFontColor: boolean read FOptKeepSelFontColor write FOptKeepSelFontColor default false;
     property OptShowScrollHint: boolean read FOptShowScrollHint write FOptShowScrollHint default false;
@@ -2335,6 +2336,42 @@ uses
 //unit was changed to an INC file because of problems with IDE under macOS
 {$I atsynedit_adapter_ime_cocoa.inc}
 {$endif}
+
+
+function _GapsSize(
+  AStrings: TATStrings;
+  AGaps: TATGaps;
+  AEditorIndex: integer;
+  ALineFrom, ALineTo: integer;
+  AForAllLines: boolean): integer;
+var
+  StItem: PATStringItem;
+  GapItem: TATGapItem;
+  iGap, iLine: integer;
+  bHidden: boolean;
+begin
+  Result:= 0;
+  for iGap:= 0 to AGaps.Count-1 do
+  begin
+    GapItem:= AGaps.Items[iGap];
+    iLine:= GapItem.LineIndex;
+    if iLine=-1 then //very top gap has LineIndex=-1
+      bHidden:= false
+    else
+    begin
+      if not AStrings.IsIndexValid(iLine) then Break;
+      StItem:= AStrings.GetItemPtr(iLine);
+      if AEditorIndex=0 then
+        bHidden:= StItem^.Ex.Hidden_0
+      else
+        bHidden:= StItem^.Ex.Hidden_1;
+    end;
+    if not bHidden then
+      if AForAllLines or ((GapItem.LineIndex>=ALineFrom) and (GapItem.LineIndex<=ALineTo)) then
+        Inc(Result, GapItem.Size);
+  end;
+end;
+
 
 { TATMinimapThread }
 
@@ -3062,10 +3099,10 @@ begin
       NPos:= Max(0, FScrollVert.NPos);
       if FWrapInfo.IsIndexValid(NPos) then
         NLineIndex:= FWrapInfo.Data[NPos].NLineIndex;
-      NGapPos:= Gaps.SizeForLineRange(-1, NLineIndex-1);
+      NGapPos:= _GapsSize(Strings, Gaps, EditorIndex, -1, NLineIndex-1, false);
     end;
 
-    NGapAll:= Gaps.SizeForAll;
+    NGapAll:= _GapsSize(Strings, Gaps, EditorIndex, 0, 0, true);
   end;
 
   if not ModeOneLine then
@@ -4123,7 +4160,7 @@ var
   NCoordSep: Int64;
   WrapItem: TATWrapItem;
   StringItem: PATStringItem;
-  NColorEntire, NColorAfter, NColorIndent: TColor;
+  NColorEntire, NColorAfter: TColor;
   NDimValue: integer;
   ChosenBackColorEnum: TATEditorChosenBackColor;
   StrOutput: atString;
@@ -4310,22 +4347,6 @@ begin
       true
       );
 
-    if WrapItem.NIndent>0 then
-    begin
-      {
-      //before (2025.02):
-      NColorIndent:= FColorBG;
-      DoCalcPosColor(WrapItem.NCharIndex, NLinesIndex, NColorIndent, true);
-      }
-      //after:
-      NColorIndent:= ATempParts[0].ColorBG;
-
-      DoPaintLineIndent(C, ARectLine, ACharSize,
-        ARectLine.Top, WrapItem.NIndent,
-        NColorIndent,
-        AScrollHorz.NPos, FOptShowIndentLines);
-    end;
-
     if ATempParts[0].Offset<0 then
     begin
       //some bug in making parts! to fix!
@@ -4361,67 +4382,73 @@ begin
     if Length(StrOutput)>NCount then
       SetLength(StrOutput, NCount);
 
-      TextOutProps.Editor:= Self;
-      TextOutProps.HasAsciiNoTabs:= not FFontProportional and St.LinesHasAsciiNoTabs[NLinesIndex];
-      TextOutProps.SuperFast:= bLineHuge;
-      TextOutProps.TabHelper:= FTabHelper;
-      TextOutProps.LineIndex:= NLinesIndex;
-      TextOutProps.CharIndexInLine:= WrapItem.NCharIndex;
-      TextOutProps.CharSize:= ACharSize;
-      TextOutProps.CharsSkipped:= NOutputCellPercentsSkipped div 100;
-      TextOutProps.TrimmedTrailingNonSpaces:= bTrimmedNonSpaces;
-      TextOutProps.DrawEvent:= Event;
-      TextOutProps.ControlWidth:= ClientWidth+ACharSize.XScaled div ATEditorCharXScale * 2;
-      TextOutProps.SpacingTopEdge:= FSpacingTopEdge;
-      TextOutProps.SpacingTop:= FSpacingTop;
+    TextOutProps.Editor:= Self;
+    TextOutProps.HasAsciiNoTabs:= not FFontProportional and St.LinesHasAsciiNoTabs[NLinesIndex];
+    TextOutProps.SuperFast:= bLineHuge;
+    TextOutProps.TabHelper:= FTabHelper;
+    TextOutProps.LineIndex:= NLinesIndex;
+    TextOutProps.CharIndexInLine:= WrapItem.NCharIndex;
+    TextOutProps.CharSize:= ACharSize;
+    TextOutProps.CharsSkipped:= NOutputCellPercentsSkipped div 100;
+    TextOutProps.TrimmedTrailingNonSpaces:= bTrimmedNonSpaces;
+    TextOutProps.DrawEvent:= Event;
+    TextOutProps.ControlWidth:= ClientWidth+ACharSize.XScaled div ATEditorCharXScale * 2;
+    TextOutProps.SpacingTopEdge:= FSpacingTopEdge;
+    TextOutProps.SpacingTop:= FSpacingTop;
 
-      TextOutProps.ShowUnprinted:= FUnprintedVisible and FUnprintedSpaces;
-      TextOutProps.ShowUnprintedSpacesTrailing:= FUnprintedSpacesTrailing;
-      TextOutProps.ShowUnprintedSpacesBothEnds:= FUnprintedSpacesBothEnds;
-      TextOutProps.ShowUnprintedSpacesOnlyInSelection:= FUnprintedSpacesOnlyInSelection {and TempSel_IsSelection}; //careful, CudaText #4541
-      TextOutProps.ShowUnprintedSpacesAlsoInSelection:= not FUnprintedSpacesOnlyInSelection and FUnprintedSpacesAlsoInSelection and TempSel_IsSelection;
-      TextOutProps.ShowUnprintedForceTabs:= FUnprintedForceTabs;
-      TextOutProps.DetectIsPosSelected:= @IsPosSelected;
+    TextOutProps.ShowUnprinted:= FUnprintedVisible and FUnprintedSpaces;
+    TextOutProps.ShowUnprintedSpacesTrailing:= FUnprintedSpacesTrailing;
+    TextOutProps.ShowUnprintedSpacesBothEnds:= FUnprintedSpacesBothEnds;
+    TextOutProps.ShowUnprintedSpacesOnlyInSelection:= FUnprintedSpacesOnlyInSelection {and TempSel_IsSelection}; //careful, CudaText #4541
+    TextOutProps.ShowUnprintedSpacesAlsoInSelection:= not FUnprintedSpacesOnlyInSelection and FUnprintedSpacesAlsoInSelection and TempSel_IsSelection;
+    TextOutProps.ShowUnprintedForceTabs:= FUnprintedForceTabs;
+    TextOutProps.DetectIsPosSelected:= @IsPosSelected;
 
-      TextOutProps.ShowFontLigatures:= FOptShowFontLigatures and
-                                       (ATEditorOptions.EnableLigaturesOnLineWithCaret or not bLineWithCaret);
-      TextOutProps.ColorNormalFont:= Colors.TextFont;
-      TextOutProps.ColorUnprintedFont:= Colors.UnprintedFont;
-      TextOutProps.ColorUnprintedHexFont:= Colors.UnprintedHexFont;
+    TextOutProps.ShowFontLigatures:= FOptShowFontLigatures and
+                                     (ATEditorOptions.EnableLigaturesOnLineWithCaret or not bLineWithCaret);
+    TextOutProps.ColorNormalFont:= Colors.TextFont;
+    TextOutProps.ColorUnprintedFont:= Colors.UnprintedFont;
+    TextOutProps.ColorUnprintedHexFont:= Colors.UnprintedHexFont;
 
-      TextOutProps.FontProportional:= FFontProportional;
+    TextOutProps.FontProportional:= FFontProportional;
+    TextOutProps.FontQuality:= Font.Quality;
 
-      TextOutProps.FontNormal_Name:= Font.Name;
-      TextOutProps.FontNormal_Size:= DoScaleFont(Font.Size);
+    TextOutProps.FontNormal_Name:= Font.Name;
+    TextOutProps.FontNormal_Size:= DoScaleFont(Font.Size);
 
-      TextOutProps.FontItalic_Name:= FontItalic.Name;
-      TextOutProps.FontItalic_Size:= DoScaleFont(FontItalic.Size);
+    TextOutProps.FontItalic_Name:= FontItalic.Name;
+    TextOutProps.FontItalic_Size:= DoScaleFont(FontItalic.Size);
 
-      TextOutProps.FontBold_Name:= FontBold.Name;
-      TextOutProps.FontBold_Size:= DoScaleFont(FontBold.Size);
+    TextOutProps.FontBold_Name:= FontBold.Name;
+    TextOutProps.FontBold_Size:= DoScaleFont(FontBold.Size);
 
-      TextOutProps.FontBoldItalic_Name:= FontBoldItalic.Name;
-      TextOutProps.FontBoldItalic_Size:= DoScaleFont(FontBoldItalic.Size);
+    TextOutProps.FontBoldItalic_Name:= FontBoldItalic.Name;
+    TextOutProps.FontBoldItalic_Size:= DoScaleFont(FontBoldItalic.Size);
 
-      CanvasTextOut(C,
-        CurrPointText.X,
-        CurrPointText.Y,
-        StrOutput,
-        @ATempParts,
-        NOutputStrWidth,
-        TextOutProps
-        );
+    CanvasTextOut(C,
+      CurrPointText.X,
+      CurrPointText.Y,
+      StrOutput,
+      @ATempParts,
+      NOutputStrWidth,
+      TextOutProps
+      );
 
-      //paint selection bg, after applying ColorAfterEol
-      DoPaintSelectedLineBG(C, ACharSize, ARectLine,
-        CurrPoint,
-        CurrPointText,
-        WrapItem,
-        NOutputStrWidth,
-        AScrollHorz);
+    //paint selection bg, after applying ColorAfterEol
+    DoPaintSelectedLineBG(C, ACharSize, ARectLine,
+      CurrPoint,
+      CurrPointText,
+      WrapItem,
+      NOutputStrWidth,
+      AScrollHorz);
 
     //restore after textout
     C.Font.Style:= Font.Style;
+
+    if FOptShowIndentLines and (WrapItem.NIndent>0) then
+      DoPaintLineIndent(C, ARectLine, ACharSize,
+        ARectLine.Top, WrapItem.NIndent,
+        AScrollHorz.NPos);
   end
   else
   //paint empty line bg
@@ -5414,7 +5441,10 @@ begin
   {$endif}
 
   {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+  {
+  //Qt6 IME adapter has problem: https://github.com/Alexey-T/ATSynEdit/issues/349
   FAdapterIME:= TATAdapterQTIME.Create;
+  }
   {$endif}
 
   FPaintLocked:= 0;
@@ -5735,9 +5765,9 @@ begin
   FOptShowFullSel:= false;
   FOptShowFullHilite:= true;
   FOptShowCurLine:= false;
-  FOptShowCurLineMinimal:= true;
-  FOptShowCurLineOnlyFocused:= false;
-  FOptShowCurLineIfWithoutSel:= true;
+  FOptShowCurLineMinimal:= cInitShowCurLineMinimal;
+  FOptShowCurLineOnlyFocused:= cInitShowCurLineOnlyFocused;
+  FOptShowCurLineIfWithoutSel:= cInitShowCurLineIfWithoutSel;
   FOptShowCurColumn:= false;
   FOptShowMouseSelFrame:= cInitShowMouseSelFrame;
   FOptShowIndentLines:= true;
@@ -6313,7 +6343,6 @@ begin
     DoPaintRulerCaretMarks(C);
   end;
 
-  UpdateMarkersCoords;
   DoPaintMarkersTo(C);
   DoPaintMarkerOfDragDrop(C);
 end;
@@ -6681,8 +6710,10 @@ end;
 procedure _UpdateScrollInfoFromSmoothPos(
   var AInfo: TATEditorScrollInfo;
   const APos: Int64;
+  AStrings: TATStrings;
   AWrapInfo: TATWrapInfo;
-  AGaps: TATGaps);
+  AGaps: TATGaps;
+  AEditorIndex: integer);
 //Note: for vertical bar, NPos=-1 means than we are before the first line, over top gap
 var
   NPos, NPixels, NLineIndex: Int64;
@@ -6743,7 +6774,8 @@ begin
 
     repeat
       NLineIndex:= AWrapInfo.Data[NPos].NLineIndex - 1;
-      NPixels:= APos - NPos* AInfo.CharSizeScaled div ATEditorCharXScale - AGaps.SizeForLineRange(-1, NLineIndex);
+      NPixels:= APos - NPos* AInfo.CharSizeScaled div ATEditorCharXScale
+        - _GapsSize(AStrings, AGaps, AEditorIndex, -1, NLineIndex, false);
       if NPos=0 then Break;
       if NLineIndex=0 then Break;
       if NPixels>=0 then Break;
@@ -6757,7 +6789,14 @@ end;
 
 procedure TATSynEdit.UpdateScrollInfoFromSmoothPos(var AInfo: TATEditorScrollInfo; const APos: Int64);
 begin
-  _UpdateScrollInfoFromSmoothPos(AInfo, APos, WrapInfo, Gaps);
+  _UpdateScrollInfoFromSmoothPos(
+    AInfo,
+    APos,
+    Strings,
+    WrapInfo,
+    Gaps,
+    EditorIndex
+    );
 end;
 
 function TATSynEdit.UpdateScrollInfoFromMessage(var AInfo: TATEditorScrollInfo; const AMsg: TLMScroll): boolean;
@@ -8562,29 +8601,27 @@ procedure TATSynEdit.DoPaintLineIndent(C: TCanvas;
   const ACharSize: TATEditorCharSize;
   ACoordY: integer;
   AIndentSize: integer;
-  AColorBG: TColor;
-  AScrollPos: integer;
-  AShowIndentLines: boolean);
+  AScrollPos: integer);
 var
   i: integer;
-  RBack: TRect;
+  //RBack: TRect;
 begin
-  if AIndentSize=0 then Exit;
-
+  {
+  //code filled the background of indent; now not needed
   RBack:= Rect(0, 0, AIndentSize*ACharSize.XScaled div ATEditorCharXScale, ACharSize.Y);
   OffsetRect(RBack, ARect.Left-AScrollPos*ACharSize.XScaled div ATEditorCharXScale, ACoordY);
 
   C.Brush.Color:= AColorBG;
   C.FillRect(RBack);
+  }
 
-  if AShowIndentLines then
-    for i:= 0 to AIndentSize-1 do
-      if i mod FOptTabSize = 0 then
-        CanvasLine_DottedVertAlt(C,
-          Colors.IndentVertLines,
-          ARect.Left + (i-AScrollPos)*ACharSize.XScaled*ACharSize.XSpacePercents div ATEditorCharXScale div 100,
-          ACoordY,
-          ACoordY+ACharSize.Y);
+  for i:= 0 to AIndentSize-1 do
+    if i mod FOptTabSize = 0 then
+      CanvasLine_DottedVertAlt(C,
+        Colors.IndentVertLines,
+        ARect.Left + (i-AScrollPos)*ACharSize.XScaled*ACharSize.XSpacePercents div ATEditorCharXScale div 100,
+        ACoordY,
+        ACoordY+ACharSize.Y);
 end;
 
 procedure TATSynEdit.DoPaintSelectedLineBG(C: TCanvas;
@@ -9157,6 +9194,7 @@ var
   bSel: boolean;
   Relation: TATPosRelation;
   Details: TATEditorPosDetails;
+  NChangedLine: integer;
 begin
   if ModeReadOnly then exit;
   St:= Strings;
@@ -9185,7 +9223,7 @@ begin
   if Relation=TATPosRelation.Before then
   begin
     if AndDeleteSelection then
-      St.TextDeleteRange(X1, Y1, X2, Y2, Shift, PosAfter);
+      St.TextDeleteRange(X1, Y1, X2, Y2, Shift);
     St.TextInsert(P.X, P.Y, Str, false, Shift, PosAfter);
 
     //select moved text
@@ -9200,25 +9238,24 @@ begin
 
     if AndDeleteSelection then
     begin
-      St.TextDeleteRange(X1, Y1, X2, Y2, Shift, PosAfter);
+      St.TextDeleteRange(X1, Y1, X2, Y2, Shift);
       UpdateCaretsAndMarkersOnEditing(0,
         Point(X1, Y1),
         Point(X2, Y2),
         Shift,
-        PosAfter);
+        Point(X1, Y1));
     end;
   end;
 
   DoEventCarets;
 
   EndEditing(true);
-  {
-  NChangedLine:= St.EditingTopLine; //Min(Y1, P.Y)
+
+  NChangedLine:= Min(Y1, P.Y); //St.EditingTopLine;
   DoEventChange(NChangedLine);
     //with DoEventChange(ALineIndex=-1), we have broken syntax highlight,
     //after drag-drop from huge line, to the lower position of the same huge line,
     //e.g. in 100K HTML file with huge line
-  }
 
   Update(true);
 end;
@@ -10121,26 +10158,36 @@ end;
 
 procedure TATSynEdit.DoPaintMarkersTo(C: TCanvas);
 var
-  Mark: TATMarkerItem;
+  MarkerPtr: PATMarkerItem;
+  CoordBegin, CoordEnd: TATPoint;
   PntCoord: TATPoint;
   PntShort: TPoint;
+  NLineTop, NLineBottom: integer;
   NMarkSize, NLineW: integer;
-  iMark: integer;
+  iMarker: integer;
   R: TRect;
 begin
   if FMarkers=nil then exit;
 
+  NLineTop:= LineTop;
+  NLineBottom:= LineBottom;
   NMarkSize:= Max(1, FCharSize.Y * FOptMarkersSize div (100*2));
   NLineW:= NMarkSize;
 
-  for iMark:= 0 to FMarkers.Count-1 do
+  for iMarker:= 0 to FMarkers.Count-1 do
   begin
-    Mark:= FMarkers[iMark];
-    if Mark.CoordX<0 then Continue;
-    if Mark.CoordY<0 then Continue;
+    MarkerPtr:= FMarkers.ItemPtr(iMarker);
 
-    PntCoord.X:= Mark.CoordX;
-    PntCoord.Y:= Mark.CoordY+FCharSize.Y;
+    if MarkerPtr^.PosY<NLineTop then Continue;
+    if MarkerPtr^.PosY>NLineBottom then Continue;
+    if IsPosFolded(MarkerPtr^.PosX, MarkerPtr^.PosY) then Continue;
+
+    CalcMarkerCoords(MarkerPtr, CoordBegin, CoordEnd);
+    if CoordBegin.X<0 then Continue;
+    if CoordBegin.Y<0 then Continue;
+
+    PntCoord.X:= CoordBegin.X;
+    PntCoord.Y:= CoordBegin.Y+FCharSize.Y;
 
     if ATPointInRect(FRectMain, PntCoord) then
     begin
@@ -10148,10 +10195,10 @@ begin
       PntShort.Y:= PntCoord.Y;
       CanvasPaintTriangleUp(C, Colors.Markers, PntShort, NMarkSize);
 
-      if (Mark.LineLen<>0) and (Mark.CoordY=Mark.CoordY2) then
+      if (MarkerPtr^.LineLen<>0) and (CoordBegin.Y=CoordEnd.Y) then
       begin
-        R.Left:= Min(PntShort.X, Mark.CoordX2);
-        R.Right:= Max(PntShort.X, Mark.CoordX2)+1;
+        R.Left:= Min(PntShort.X, CoordEnd.X);
+        R.Right:= Max(PntShort.X, CoordEnd.X)+1;
         R.Bottom:= PntShort.Y+NMarkSize+1;
         R.Top:= R.Bottom-NLineW;
 
@@ -10619,6 +10666,7 @@ begin
   TextOutProps.ColorUnprintedHexFont:= Colors.UnprintedHexFont;
 
   TextOutProps.FontProportional:= FFontProportional;
+  TextOutProps.FontQuality:= Font.Quality;
 
   if AFontSize<=2 then
   begin

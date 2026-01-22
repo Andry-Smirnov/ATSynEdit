@@ -200,19 +200,21 @@ end;
 function TATSynEdit.DoCommand_ClipboardPasteFromRecents: TATCommandResults;
   //
   function PrepareStringForMenu(const S: string): string;
+  var
+    i: SizeInt;
   begin
     Result:= S;
-
-    //replace EOLs with space, almost like ST4
-    Result:= StringReplace(Result, #13#10, ' ', [rfReplaceAll]);
-    Result:= StringReplace(Result, #13, ' ', [rfReplaceAll]);
-    Result:= StringReplace(Result, #10, ' ', [rfReplaceAll]);
 
     //delete indent
     Result:= TrimLeftSet(Result, [' ', #9]);
 
-    if Length(Result)>ATEditorOptions.MaxClipboardRecentsMenuitemLen then
-      Result:= Copy(Result, 1, ATEditorOptions.MaxClipboardRecentsMenuitemLen)+'...';
+    if UTF8Length(Result)>ATEditorOptions.MaxClipboardRecentsMenuitemLen then
+      Result:= UTF8Copy(Result, 1, ATEditorOptions.MaxClipboardRecentsMenuitemLen)+'...';
+
+    //replace EOLs with space, almost like ST4
+    for i:= 1 to Length(Result) do
+      if Result[i] in [#10, #13] then
+        Result[i]:= ' ';
   end;
   //
 var
@@ -303,35 +305,44 @@ var
 begin
   SNewText:= GetTextForClipboard;
 
-  if IsSelColumn then
-  begin
-    //copy column block
-    SClipboardCopy(SNewText, AClipboardObject);
-    AClipboardObject.AddFormat(
-      ATEditorOptions.ClipboardColumnFormat,
-      ATEditorOptions.ClipboardColumnSignature,
-      SizeOf(ATEditorOptions.ClipboardColumnSignature));
-  end
-  else
-  begin
-    //copy usual block
-    if Append then
-      SClipboardCopy(AClipboardObject.AsText+SNewText, AClipboardObject)
-    else
+  AClipboardObject.Open;
+  try
+    if IsSelColumn then
+    begin
+      //copy column block
       SClipboardCopy(SNewText, AClipboardObject);
+      AClipboardObject.AddFormat(
+        ATEditorOptions.ClipboardColumnFormat,
+        ATEditorOptions.ClipboardColumnSignature,
+        SizeOf(ATEditorOptions.ClipboardColumnSignature));
+    end
+    else
+    begin
+      //copy usual block
+      if Append then
+        SClipboardCopy(AClipboardObject.AsText+SNewText, AClipboardObject)
+      else
+        SClipboardCopy(SNewText, AClipboardObject);
+    end;
+
+    {$ifndef windows}
+    //for Linux gtk2, not sure about Mac
+    if AClipboardObject=Clipboard then
+      SClipboardCopy(SNewText, PrimarySelection);
+    {$endif}
+
+    //if Clipboard.Open/.Close calls are missed (missed before 2025.12),
+    //.AddFormat breaks the clipboard copying to other apps on Wayland on Qt5/Qt6.
+    //CudaText issue #6111.
+    //seems it is fixed now.
+    InitClipboardExData(ClipExData);
+    AClipboardObject.AddFormat(
+      ATEditorOptions.ClipboardExFormat,
+      ClipExData,
+      SizeOf(ClipExData));
+  finally
+    AClipboardObject.Close;
   end;
-
-  {$ifndef windows}
-  //for Linux gtk2, not sure about Mac
-  if AClipboardObject=Clipboard then
-    SClipboardCopy(SNewText, PrimarySelection);
-  {$endif}
-
-  InitClipboardExData(ClipExData);
-  AClipboardObject.AddFormat(
-    ATEditorOptions.ClipboardExFormat,
-    ClipExData,
-    SizeOf(ClipExData));
 
   UpdateClipboardRecents(SNewText);
 

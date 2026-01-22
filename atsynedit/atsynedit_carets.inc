@@ -126,7 +126,7 @@ begin
   end;
 end;
 
-procedure TATSynEdit.UpdateCaretsCoords(AOnlyLast: boolean=false; ASkipInvisible: boolean=false);
+procedure TATSynEdit.UpdateCaretsCoords(AOnlyLast: boolean=false; AOnlyForVisibleArea: boolean=false);
 {
 UpdateCaretsCoords is called 2 times per each keypress. too often? no, cannot call it less.
 a) UpdateCaretsCoords is called from DoCommand (which calls DoCommandResults). call is required for
@@ -138,10 +138,9 @@ b) UpdateCaretsCoords is called from DoPaintAll. it is not related to DoCommand/
 var
   St: TATStrings;
   Caret: TATCaretItem;
-  PntCaret: TPoint;
   PntCoord: TATPoint;
   NCaretCount, NStart: integer;
-  //NLineTop, NLineBottom: integer;
+  NLineTop, NLineBottom: integer;
   iCaret: integer;
 begin
   if Assigned(FOnCalcCaretsCoords) then
@@ -154,14 +153,11 @@ begin
   else
     NStart:= 0;
 
-  //fixing CudaText #4427, always update all carets
-  {
-  if ASkipInvisible then
+  if AOnlyForVisibleArea then
   begin
     NLineTop:= LineTop;
     NLineBottom:= LineBottom;
   end;
-  }
 
   for iCaret:= NStart to NCaretCount-1 do
   begin
@@ -169,24 +165,18 @@ begin
     Caret.CoordX:= -1;
     Caret.CoordY:= -1;
 
-    PntCaret.X:= Caret.PosX;
-    PntCaret.Y:= Caret.PosY;
+    if AOnlyForVisibleArea then
+    begin
+      if Caret.PosY<NLineTop then Continue;
+      if Caret.PosY>NLineBottom then Continue;
+    end;
 
-    if not St.IsIndexValid(PntCaret.Y) then
+    if not St.IsIndexValid(Caret.PosY) then
       Continue;
 
-    {
-    //fixing CudaText #4427
-    if ASkipInvisible then
+    if not IsPosFolded(Caret.PosX, Caret.PosY) then
     begin
-      if PntCaret.Y<NLineTop then Continue;
-      if PntCaret.Y>NLineBottom then Continue;
-    end;
-    }
-
-    if not IsPosFolded(PntCaret.X, PntCaret.Y) then
-    begin
-      PntCoord:= CaretPosToClientPos(PntCaret);
+      PntCoord:= CaretPosToClientPos(Point(Caret.PosX, Caret.PosY));
       Caret.CoordX:= PntCoord.X;
       Caret.CoordY:= PntCoord.Y;
     end;
@@ -217,47 +207,24 @@ begin
   end;
 end;
 
-procedure TATSynEdit.UpdateMarkersCoords;
+procedure TATSynEdit.CalcMarkerCoords(AMarker: PATMarkerItem; out ABegin, AEnd: TATPoint);
 var
-  Marker: PATMarkerItem;
-  PntCaret: TPoint;
-  PntCoord: TATPoint;
-  NLineTop, NLineBottom: integer;
-  i: integer;
+  Pnt: TPoint;
 begin
-  if FMarkers=nil then exit;
+  Pnt.X:= AMarker^.PosX;
+  Pnt.Y:= AMarker^.PosY;
+  ABegin:= CaretPosToClientPos(Pnt);
 
-  NLineTop:= LineTop;
-  NLineBottom:= LineBottom;
-
-  for i:= 0 to FMarkers.Count-1 do
+  if AMarker^.LineLen<>0 then //can be positive and negative
   begin
-    Marker:= FMarkers.ItemPtr(i);
-    Marker^.CoordX:= -1;
-    Marker^.CoordY:= -1;
-    Marker^.CoordX2:= -1;
-    Marker^.CoordY2:= -1;
-
-    if Marker^.PosY<NLineTop then Continue;
-    if Marker^.PosY>NLineBottom then Continue;
-
-    PntCaret.X:= Marker^.PosX;
-    PntCaret.Y:= Marker^.PosY;
-
-    if not IsPosFolded(PntCaret.X, PntCaret.Y) then
-    begin
-      PntCoord:= CaretPosToClientPos(PntCaret);
-      Marker^.CoordX:= PntCoord.X;
-      Marker^.CoordY:= PntCoord.Y;
-      if Marker^.LineLen<>0 then
-      begin
-        PntCaret.X:= Marker^.PosX+Marker^.LineLen;
-        PntCaret.Y:= Marker^.PosY;
-        PntCoord:= CaretPosToClientPos(PntCaret);
-        Marker^.CoordX2:= PntCoord.X;
-        Marker^.CoordY2:= PntCoord.Y;
-      end;
-    end;
+    Pnt.X:= AMarker^.PosX+AMarker^.LineLen;
+    Pnt.Y:= AMarker^.PosY;
+    AEnd:= CaretPosToClientPos(Pnt);
+  end
+  else
+  begin
+    AEnd.X:= -1;
+    AEnd.Y:= -1;
   end;
 end;
 
@@ -270,6 +237,7 @@ function GenericCaretPosToClientPos(
   ATabHelper: TATStringTabHelper;
   const ARect: TRect;
   const AScrollHorz, AScrollVert: TATEditorScrollInfo;
+  AEditorIndex: integer;
   APreferLeftSide: boolean): TATPoint;
 var
   Item: TATWrapItem;
@@ -355,9 +323,13 @@ begin
     if (AGaps.Count>0) and AWrapInfo.IsIndexValid(NScrolledVert) then
     begin
       NLineIndexTop:= AWrapInfo[NScrolledVert].NLineIndex;
-      Inc(Result.Y, AGaps.SizeForLineRange(
+      Inc(Result.Y, _GapsSize(
+        AStrings,
+        AGaps,
+        AEditorIndex,
         NLineIndexTop, //index of top line
-        P.Y-1 //index of line before caret
+        P.Y-1, //index of line before caret
+        false
         ));
       //consider top gap
       if AScrollVert.TopGapVisible then
@@ -561,7 +533,8 @@ end;
 
 function TATSynEdit.CaretPosToClientPos(const APos: TPoint): TATPoint;
 begin
-  Result:= GenericCaretPosToClientPos(APos,
+  Result:= GenericCaretPosToClientPos(
+    APos,
     WrapInfo,
     Strings,
     Gaps,
@@ -569,6 +542,7 @@ begin
     FRectMain,
     FScrollHorz,
     FScrollVert,
+    EditorIndex,
     FCaretSpecPos or FOptCaretPreferLeftSide
     );
 
@@ -986,14 +960,16 @@ var
   NEndX, NEndY: integer;
   Caret: TATCaretItem;
 begin
-  NEndX:= -1;
-  NEndY:= -1;
-
   if (not AClearSelection) and (Carets.Count>0) then
   begin
     Caret:= Carets[0];
     NEndX:= Caret.EndX;
     NEndY:= Caret.EndY;
+  end
+  else
+  begin
+    NEndX:= -1;
+    NEndY:= -1;
   end;
 
   DoCaretSingle(AX, AY, NEndX, NEndY);
@@ -1250,23 +1226,43 @@ procedure TATSynEdit.UpdateCaretsAndMarkersOnEditing(
   AFromCaret: integer; APos, APosEnd, AShift, APosAfter: TPoint);
 //for text change at unknown caret, pass AFromCaret=0
 var
-  i: integer;
+  Caret: TATCaretItem;
   {$ifdef debug_markers_shift}
   S: string;
   {$endif}
+  i: integer;
+  bSingleLine,
+  bDeleteToRight,
+  bDeleteToRightInited: boolean;
 begin
-  if APos.X<0 then Exit;
+  //if APos.X<0 then Exit;
   if APos.Y<0 then Exit;
 
   if Assigned(FOnChangeDetailed) then
     FOnChangeDetailed(Self, APos, APosEnd, AShift, APosAfter);
 
-  //if AFromCaret<0 then
-  //  AFromCaret:= Carets.IndexOfPosYAvg(APosY);
+  bSingleLine:= AShift.Y=0; //must be True only for single-line edition: e.g. char is typed, BkSp/Del in the middle of a line
+  bDeleteToRightInited:= false;
+  bDeleteToRight:= true;
 
-  if AFromCaret>=0 then
-    for i:= AFromCaret to Carets.Count-1 do
-      Carets[i].UpdateOnEditing(APos, APosEnd, AShift);
+  for i:= AFromCaret to Carets.Count-1 do
+  begin
+    Caret:= Carets[i];
+
+    if bSingleLine then
+    begin
+      if Caret.PosY>APos.Y then Break; //big optimization when char is typed with 20K carets (aligned in a column)
+      if Caret.PosY<APos.Y then Continue;
+    end;
+
+    if not bDeleteToRightInited then
+    begin
+      bDeleteToRightInited:= true;
+      bDeleteToRight:= (APos=APosAfter) and (AShift.Y=0) and (AShift.X<0);
+    end;
+
+    Caret.UpdateOnEditing(APos, APosEnd, AShift, bDeleteToRight);
+  end;
 
   {$ifdef debug_markers_shift}
   S:= '';
@@ -1424,7 +1420,7 @@ end;
 procedure TATSynEdit.CalcCaretDistanceFromEdges(ACommand: integer;
   out ALinesFromTop, ALinesFromBottom: integer);
 var
-  NProximity, NPixels1, NPixels2: integer;
+  NProximity: integer;
   Caret: TATCaretItem;
   bAllowMultiCarets, bMoveDown: boolean;
 begin

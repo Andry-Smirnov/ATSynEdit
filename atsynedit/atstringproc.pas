@@ -68,8 +68,8 @@ type
 
 type
   TATMarkerMarkerRecord = record
-    Tag: Int64;
-    TagEx: Int64;
+    Tag: integer;
+    TagEx: integer;
     PosX: integer;
     PosY: integer;
     SelX: integer;
@@ -80,8 +80,8 @@ type
 
 type
   TATMarkerAttribRecord = record
-    Tag: Int64;
-    TagEx: Int64;
+    Tag: integer;
+    TagEx: integer;
     PosX: integer;
     PosY: integer;
     SelX: integer;
@@ -1383,7 +1383,7 @@ begin
     List.Delete(List.Count-1);
 end;
 
-procedure SClipboardCopy(AText: string; AClipboardObj: TClipboard=nil);
+procedure SClipboardCopy({const? not for gtk2} AText: string; AClipboardObj: TClipboard=nil);
 begin
   if AText='' then exit;
   if AClipboardObj=nil then

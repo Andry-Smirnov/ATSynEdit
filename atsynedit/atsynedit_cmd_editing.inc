@@ -139,6 +139,7 @@ begin
         St.TextReplaceRange(X1, Y1, X2, Y2, TextItem, Shift, PosAfter, false)
       else
         St.TextInsert(X1, Y1, TextItem, AOvrMode, Shift, PosAfter);
+
       UpdateCaretsAndMarkersOnEditing(iCaret+1,
         Point(X1, Y1),
         Point(X1, Y1),
@@ -459,7 +460,7 @@ function TATSynEdit.DoCommand_TextDeleteSelection(ASkipTouchingSel: boolean=fals
 var
   Caret: TATCaretItem;
   St: TATStrings;
-  Shift, PosAfter: TPoint;
+  Shift: TPoint;
   NCaretCount: integer;
   X1, Y1, X2, Y2: integer;
   bSel, bSelTouch: boolean;
@@ -497,7 +498,7 @@ begin
       Caret.GetRange(X1, Y1, X2, Y2, bSel);
       if not bSel then Continue;
 
-      St.TextDeleteRange(X1, Y1, X2, Y2, Shift, PosAfter);
+      St.TextDeleteRange(X1, Y1, X2, Y2, Shift);
 
       Caret.PosX:= X1;
       Caret.PosY:= Y1;
@@ -512,7 +513,7 @@ begin
         Point(X1, Y1),
         Point(X2, Y2),
         Shift,
-        PosAfter);
+        Point(X1, Y1));
     end;
   finally
     St.EndUndoGroup;
@@ -521,7 +522,9 @@ begin
   //CudaText issue #1615
   Carets.Sort;
 
-  Result:= [TATCommandResult.Text, TATCommandResult.CaretTop];
+  //CaretLazy is needed:
+  //because we may be scrolled to 2nd caret at line 100, and 1st caret was left at line 1
+  Result:= [TATCommandResult.Text, TATCommandResult.CaretTop, TATCommandResult.CaretLazy];
 end;
 
 
@@ -1466,7 +1469,7 @@ var
   Caret: TATCaretItem;
   St: TATStrings;
   Str: atString;
-  Shift, PosAfter: TPoint;
+  Shift: TPoint;
 begin
   Result:= [];
   if ModeReadOnly then Exit;
@@ -1492,7 +1495,7 @@ begin
 
   //do it with fast method, not "for loop"
   if Caret.PosY>0 then
-    St.TextDeleteRange(0, 0, 0, Caret.PosY, Shift, PosAfter);
+    St.TextDeleteRange(0, 0, 0, Caret.PosY, Shift);
 
   St.ChangeBlockActive:= false;
 
@@ -1501,7 +1504,7 @@ begin
     Point(Caret.PosX, Caret.PosY),
     Point(Caret.PosX, Caret.PosY),
     Point(-Caret.PosX, -Caret.PosY),
-    PosAfter);
+    Point(Caret.PosX, Caret.PosY));
 
   //move caret to beginning
   DoCaretSingle(0, 0);
@@ -1514,7 +1517,7 @@ function TATSynEdit.DoCommand_TextDeleteToDocumentEnd: TATCommandResults;
 var
   St: TATStrings;
   Caret: TATCaretItem;
-  Shift, PosAfter: TPoint;
+  Shift: TPoint;
 begin
   Result:= [];
   if ModeReadOnly then Exit;
@@ -1531,7 +1534,7 @@ begin
     nil
     );
 
-  St.TextDeleteRange(Caret.PosX, Caret.PosY, 0, St.Count, Shift, PosAfter);
+  St.TextDeleteRange(Caret.PosX, Caret.PosY, 0, St.Count, Shift);
 
   UpdateMarkersOnDeleting(Caret.PosX, Caret.PosY, 0, St.Count);
 

@@ -86,7 +86,7 @@ end;
 
 procedure TATSynEdit.MarkerClearAll;
 begin
-  if Assigned(FMarkers) then
+  if Assigned(FMarkers) and (FMarkers.Count>0) then
   begin
     FMarkers.Clear;
     Update;
@@ -95,7 +95,7 @@ end;
 
 procedure TATSynEdit.AttribClearAll;
 begin
-  if Assigned(FAttribs) then
+  if Assigned(FAttribs) and (FAttribs.Count>0) then
   begin
     FAttribs.Clear;
     Update;
@@ -147,7 +147,7 @@ var
   Caret: TATCaretItem;
   Mark: TATMarkerItem;
   X1, Y1, X2, Y2: integer;
-  Shift, PosAfter: TPoint;
+  Shift: TPoint;
 begin
   if Carets.Count<>1 then exit;
   if FMarkers=nil then exit;
@@ -170,7 +170,7 @@ begin
   Caret.PosY:= Y1;
   FMarkers.Delete(FMarkers.Count-1);
 
-  Strings.TextDeleteRange(X1, Y1, X2, Y2, Shift, PosAfter);
+  Strings.TextDeleteRange(X1, Y1, X2, Y2, Shift);
   Update;
   DoEventChange;
 end;

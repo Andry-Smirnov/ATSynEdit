@@ -425,7 +425,7 @@ type
       APosAfter: TPoint; AllowGoToPrevLine: boolean; out ATextChanged: boolean);
     procedure TextDeleteRight(AX, AY: SizeInt; ALen: SizeInt; out AShift,
       APosAfter: TPoint; ACanDelEol: boolean=true);
-    function TextDeleteRange(AFromX, AFromY, AToX, AToY: SizeInt; out AShift, APosAfter: TPoint): boolean;
+    function TextDeleteRange(AFromX, AFromY, AToX, AToY: SizeInt; out AShift: TPoint): boolean;
     procedure TextInsertEol(AX, AY: SizeInt; AKeepCaret, ATrimPrevLine: boolean;
       const AStrIndent: atString; out AShift, APosAfter: TPoint);
     procedure TextDeleteLine(AX, AY: SizeInt; out AShift, APosAfter: TPoint);
@@ -1491,16 +1491,25 @@ end;
 
 procedure TATStrings.LineAddEx(const AString: atString; AEnd: TATLineEnds);
 var
-  AEndInside: TATLineEnds;
+  TempEnd: TATLineEnds;
+  NLastIndex: integer;
 begin
   if FReadOnly then Exit;
 
-  AEndInside:= AEnd;
-  if AEndInside=TATLineEnds.None then
-    AEndInside:= FEndings;
-
   if IsLastLineFake then
-    LineInsertRaw(Count-1, AString, AEndInside)
+  begin
+    TempEnd:= AEnd;
+    if TempEnd=TATLineEnds.None then
+      TempEnd:= FEndings;
+
+    //avoid here LineInsert* (it was here before 2025.12),
+    //because it turns off EnableCachedWrapinfoUpdate
+
+    NLastIndex:= Count-1;
+    Lines[NLastIndex]:= AString;
+    LinesEnds[NLastIndex]:= TempEnd;
+    LineAddRaw('', TATLineEnds.None);
+  end
   else
   begin
     LineAddRaw(AString, AEnd);

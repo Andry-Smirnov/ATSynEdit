@@ -7,6 +7,7 @@ unit ATSynEdit_Markers;
 {$mode objfpc}{$H+}
 {$ModeSwitch advancedrecords}
 {$ScopedEnums on}
+{$MinEnumSize 1}
 
 interface
 
@@ -31,25 +32,17 @@ type
 
   TATMarkerTags = record
     Tag,
-    TagEx: Int64;
-    constructor Init(const ATag, AColumnTag: Int64);
+    TagEx: integer;
+    constructor Init(ATag, AColumnTag: integer);
   end;
 
 type
   { TATMarkerItem }
 
   PATMarkerItem = ^TATMarkerItem;
-  TATMarkerItem = record
-    //text position of marker
+  TATMarkerItem = packed record
+    //text position
     PosX, PosY: integer;
-
-    //render underline near the marker, when LineLen<>0
-    LineLen: integer;
-
-    //screen coords
-    CoordX, CoordY: Int64;
-    //screen coords of line end, when LineLen<>0
-    CoordX2, CoordY2: Int64;
 
     //used in CudaText: when "Collect marker" gets this marker, caret will be with selection
     //if SelY=0 - LenX is length of sel (single line)
@@ -57,19 +50,21 @@ type
     //            LenX is absolute X of sel-end
     SelX, SelY: integer;
 
-    //used in CudaText: when "Collect marker" runs, for all markers
-    //with the same Tag>0 multi-carets are placed
-    Tag: Int64;
-
-    //used to place marker on micromap column with given Tag
-    //used in DimRanges list, holds dim value
-    TagEx: Int64;
-
     //used in Attribs object
     LinePart: TATLinePart;
 
+    //used in CudaText: when "Collect marker" runs, for all markers
+    //with the same Tag>0 multi-carets are placed
+    Tag: integer;
+
+    //render underline, when LineLen<>0 (positive and negative are supported)
+    LineLen: int16;
+
     //enables to show marker on micromap
     MicromapMode: TATMarkerMicromapMode;
+
+    //used in Attribs list, tag of micromap-column
+    TagEx: byte;
 
     class operator=(const A, B: TATMarkerItem): boolean;
     function SelContains(AX, AY: integer): boolean;
@@ -119,7 +114,7 @@ type
       AMicromapMode: TATMarkerMicromapMode=TATMarkerMicromapMode.TextOnly;
       ALineLen: integer=0);
     function DeleteInRange(AX1, AY1, AX2, AY2: integer): boolean;
-    function DeleteWithTag(const ATag: Int64): boolean;
+    function DeleteWithTag(ATag: integer): boolean;
     function DeleteByPos(AX, AY: integer): boolean;
     procedure Find(AX, AY: integer; out AIndex: integer; out AExactMatch: boolean);
     function FindContaining(AX, AY: integer): integer;
@@ -138,7 +133,7 @@ end;
 
 { TATMarkerTags }
 
-constructor TATMarkerTags.Init(const ATag, AColumnTag: Int64);
+constructor TATMarkerTags.Init(ATag, AColumnTag: integer);
 begin
   Tag:= ATag;
   TagEx:= AColumnTag;
@@ -385,10 +380,6 @@ begin
   Item:= Default(TATMarkerItem);
   Item.PosX:= APos.X;
   Item.PosY:= APos.Y;
-  Item.CoordX:= -1;
-  Item.CoordY:= -1;
-  Item.CoordX2:= -1;
-  Item.CoordY2:= -1;
   Item.SelX:= ASel.X;
   Item.SelY:= ASel.Y;
   Item.LineLen:= ALineLen;
@@ -458,13 +449,23 @@ begin
       j:= i;
       while (j>0) and IsMarkerOk(ItemPtr(j-1)) do
         Dec(j);
-      FList.DeleteRange(j, i);
+
+      //DeleteRange can avoid mem realloc sometimes.
+      //work around this:
+      if (j=0) and (i=Count-1) then
+      begin
+        FList.Clear;
+        Break;
+      end
+      else
+        FList.DeleteRange(j, i);
+
       i:= j;
     end;
   until false;
 end;
 
-function TATMarkers.DeleteWithTag(const ATag: Int64): boolean;
+function TATMarkers.DeleteWithTag(ATag: integer): boolean;
 var
   i, j: integer;
 begin
@@ -479,7 +480,19 @@ begin
       j:= i;
       while (j>0) and (ItemPtr(j-1)^.Tag=ATag) do
         Dec(j);
-      FList.DeleteRange(j, i);
+
+      //DeleteRange reallocs mem ONLY if some condition is met.
+      //this gives problem in the CudaText plugin Spell Checker when "Clear marks"
+      //command is called with _lot_ of marks, but mem is still not freed.
+      //so work around this:
+      if (j=0) and (i=Count-1) then
+      begin
+        FList.Clear;
+        Break;
+      end
+      else
+        FList.DeleteRange(j, i);
+
       i:= j;
     end;
   until false;
@@ -612,6 +625,14 @@ begin
     Item^.UpdateOnEditing(APos, APosEnd, AShift, APosAfter);
   end;
 end;
+
+{
+var
+  n: integer;
+initialization
+  n:= SizeOf(TATMarkerItem);
+  n:= n+random(0);
+}
 
 end.
 
