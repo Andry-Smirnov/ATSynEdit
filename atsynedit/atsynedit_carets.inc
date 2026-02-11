@@ -240,7 +240,7 @@ function GenericCaretPosToClientPos(
   AEditorIndex: integer;
   APreferLeftSide: boolean): TATPoint;
 var
-  Item: TATWrapItem;
+  WrapItem: TATWrapItem;
   StringItem: PATStringItem;
   NWrapIndexFrom, NWrapIndexTo, NLineIndexTop: integer;
   NFromStart, NWidth: Int64;
@@ -252,7 +252,7 @@ var
   bLineHuge: boolean;
   bAsciiOnly: boolean;
   bAfterEnd: boolean;
-  i: integer;
+  iWrap: integer;
 begin
   Result.X:= -1;
   Result.Y:= -1;
@@ -286,38 +286,38 @@ begin
   NScrolledHorzSmooth:= AScrollHorz.SmoothPos-AScrollHorz.NPixelOffset;
   NScrolledVert:= Max(0, AScrollVert.NPos);
 
-  for i:= NWrapIndexFrom to NWrapIndexTo do
+  for iWrap:= NWrapIndexFrom to NWrapIndexTo do
   begin
-    Item:= AWrapInfo[i];
-    bLineHuge:= Item.NLength>cMaxFixedArray;
+    WrapItem:= AWrapInfo[iWrap];
+    bLineHuge:= WrapItem.NLength>cMaxFixedArray;
 
-    if (P.X<Item.NCharIndex-1) then Continue;
+    if (P.X<WrapItem.NCharIndex-1) then Continue;
 
-    NLastCharIndex:= Item.NCharIndex-1+Item.NLength;
-    if (Item.NFinal=TATWrapItemFinal.Middle) then
+    NLastCharIndex:= WrapItem.NCharIndex-1+WrapItem.NLength;
+    if (WrapItem.NFinal=TATWrapItemFinal.Middle) then
       if (P.X>NLastCharIndex) or
         ((P.X=NLastCharIndex) and APreferLeftSide) then
         Continue;
 
-    NFromStart:= P.X+1-Item.NCharIndex;
+    NFromStart:= P.X+1-WrapItem.NCharIndex;
 
     if bAsciiOnly or bLineHuge then
     begin
-      NWidth:= Min(NFromStart, Item.NLength) * ATabHelper.CharSize.XScaled div ATEditorCharXScale;
+      NWidth:= Min(NFromStart, WrapItem.NLength) * ATabHelper.CharSize.XScaled div ATEditorCharXScale;
     end
     else
     begin
-      Str:= AStrings.LineSub(P.Y, Item.NCharIndex, Min(NFromStart, Item.NLength));
+      Str:= AStrings.LineSub(P.Y, WrapItem.NCharIndex, Min(NFromStart, WrapItem.NLength));
       NWidth:= CanvasTextWidth(Str, P.Y, ATabHelper, ATabHelper.CharSize.XScaled, ATabHelper.FontProportional) div ATEditorCharXScale;
     end;
 
     Result.X:= NWidth;
 
-    if NFromStart>Item.NLength then
-      Inc(Result.X, Int64(NFromStart-Item.NLength)*ATabHelper.CharSize.XScaled div ATEditorCharXScale);
+    if NFromStart>WrapItem.NLength then
+      Inc(Result.X, Int64(NFromStart-WrapItem.NLength)*ATabHelper.CharSize.XScaled div ATEditorCharXScale);
 
-    Inc(Result.X, Int64(Item.NIndent)*ATabHelper.CharSize.XScaled*ATabHelper.CharSize.XSpacePercents div ATEditorCharXScale div 100 - NScrolledHorzSmooth);
-    Result.Y:= (Int64(i)-NScrolledVert)*ATabHelper.CharSize.Y;
+    Inc(Result.X, Int64(WrapItem.NIndent)*ATabHelper.CharSize.XScaled*ATabHelper.CharSize.XSpacePercents div ATEditorCharXScale div 100 - NScrolledHorzSmooth);
+    Result.Y:= (Int64(iWrap)-NScrolledVert)*ATabHelper.CharSize.Y;
 
     //consider gaps
     if (AGaps.Count>0) and AWrapInfo.IsIndexValid(NScrolledVert) then
@@ -360,7 +360,7 @@ function GenericClientPosToCaretPos(
   const ARect: TRect;
   const AScrollHorz, AScrollVert: TATEditorScrollInfo;
   AVirtualPos: boolean;
-  out ADetails: TATEditorPosDetails;
+  out APosDetails: TATEditorPosDetails;
   AGapCoordAction: TATEditorGapCoordAction;
   AAfterEofUsesLastLen: boolean;
   AEditorIndex: integer): TPoint;
@@ -369,15 +369,15 @@ var
   NLineLenOriginal, NLineLenTrimmed: integer;
   NIndex, NIndexDecrement, NPixels: Int64;
   NGapObjectWidth: integer;
-  Item: TATWrapItem;
-  ItemGap: TATGapItem;
+  WrapItem: TATWrapItem;
+  GapItem: TATGapItem;
   Str: atString;
-  StrLen: SizeInt;
-  AllowVirtual, bGapGoesToEnd: boolean;
+  NStrLen: SizeInt;
+  bAllowVirtualPos, bGapGoesToEnd: boolean;
 begin
   Result.X:= 0;
   Result.Y:= -1;
-  ADetails:= Default(TATEditorPosDetails);
+  APosDetails:= Default(TATEditorPosDetails);
 
   if (ATabHelper.CharSize.XScaled div ATEditorCharXScale <=0) or (ATabHelper.CharSize.Y<=0) then Exit;
   P.X:= Max(P.X, ARect.Left);
@@ -410,22 +410,22 @@ begin
     if NPixels>P.Y then Break;
 
     //consider gap
-    Item:= AWrapInfo[NIndex];
-    if (Item.NFinal=TATWrapItemFinal.Final) and (AGaps.Count>0) then
+    WrapItem:= AWrapInfo[NIndex];
+    if (WrapItem.NFinal=TATWrapItemFinal.Final) and (AGaps.Count>0) then
     begin
-      ItemGap:= AGaps.Find(Item.NLineIndex);
-      if Assigned(ItemGap) then
+      GapItem:= AGaps.Find(WrapItem.NLineIndex);
+      if Assigned(GapItem) then
       begin
-        Inc(NPixels, ItemGap.Size);
+        Inc(NPixels, GapItem.Size);
         if NPixels>P.Y then
         begin
-          ADetails.OnGapItem:= ItemGap;
-          ADetails.OnGapPos.Y:= P.Y - (NPixels-ItemGap.Size);
-          NGapObjectWidth:= ItemGap.GetObjectWidth;
+          APosDetails.OnGapItem:= GapItem;
+          APosDetails.OnGapPos.Y:= P.Y - (NPixels-GapItem.Size);
+          NGapObjectWidth:= GapItem.GetObjectWidth;
           if NGapObjectWidth>0 then
-            ADetails.OnGapPos.X:= P.X - GetGapBitmapPosLeft(ARect, NGapObjectWidth)
+            APosDetails.OnGapPos.X:= P.X - GetGapBitmapPosLeft(ARect, NGapObjectWidth)
           else
-            ADetails.OnGapPos.X:= P.X - ARect.Left;
+            APosDetails.OnGapPos.X:= P.X - ARect.Left;
 
           case AGapCoordAction of
             TATEditorGapCoordAction.ToLineEnd:
@@ -460,75 +460,75 @@ begin
     begin
       if AWrapInfo.IsIndexValid(NIndex) then
       begin
-        Item:= AWrapInfo[NIndex];
-        Result.Y:= Item.NLineIndex;
-        Result.X:= Item.NCharIndex+Item.NLength-1;
+        WrapItem:= AWrapInfo[NIndex];
+        Result.Y:= WrapItem.NLineIndex;
+        Result.X:= WrapItem.NCharIndex+WrapItem.NLength-1;
         if not AStrings.IsIndexValid(Result.Y) then
           Exit(Point(-1, -1));
       end;
-      ADetails.BelowAllText:= true;
+      APosDetails.BelowAllText:= true;
       Exit
     end;
   end;
 
   //click in text
-  Item:= AWrapInfo[NIndex];
-  Result.Y:= Item.NLineIndex;
+  WrapItem:= AWrapInfo[NIndex];
+  Result.Y:= WrapItem.NLineIndex;
   if not AStrings.IsIndexValid(Result.Y) then
     exit(Point(-1, -1));
 
-  NLineLenOriginal:= Item.NLength;
+  NLineLenOriginal:= WrapItem.NLength;
   if ATabHelper.FontProportional then
-    NLineLenTrimmed:= Min(Item.NLength, (AScrollHorz.SmoothPos + ARect.Width) div 2) //use min char width 2px
+    NLineLenTrimmed:= Min(WrapItem.NLength, (AScrollHorz.SmoothPos + ARect.Width) div 2) //use min char width 2px
   else
-    NLineLenTrimmed:= Min(Item.NLength, (AScrollHorz.SmoothPos + ARect.Width) * ATEditorCharXScale div ATabHelper.CharSize.XScaled);
+    NLineLenTrimmed:= Min(WrapItem.NLength, (AScrollHorz.SmoothPos + ARect.Width) * ATEditorCharXScale div ATabHelper.CharSize.XScaled);
 
   if NLineLenOriginal>cMaxFixedArray then
   begin
     //fake Str to calc CharOffsets only; ATabHelper.CalcCharOffsets limits len by cMaxFixedArray
     Str:= StringOfCharW(ATEditorOptions.SampleChar, Min(NLineLenOriginal, cMaxFixedArray));
 
-    ATabHelper.CalcCharOffsets(Item.NLineIndex, Str, CharOffsets, 0);
-    Str:= AStrings.LineSub(Item.NLineIndex, Item.NCharIndex, Min(NLineLenTrimmed, cMaxFixedArray));
-    StrLen:= AStrings.LineSubLen(Item.NLineIndex, Item.NCharIndex, NLineLenTrimmed);
+    ATabHelper.CalcCharOffsets(WrapItem.NLineIndex, Str, CharOffsets, 0);
+    Str:= AStrings.LineSub(WrapItem.NLineIndex, WrapItem.NCharIndex, Min(NLineLenTrimmed, cMaxFixedArray));
+    NStrLen:= AStrings.LineSubLen(WrapItem.NLineIndex, WrapItem.NCharIndex, NLineLenTrimmed);
   end
   else
   begin
-    Str:= AStrings.LineSub(Item.NLineIndex, Item.NCharIndex, NLineLenTrimmed);
-    StrLen:= Length(Str);
-    ATabHelper.CalcCharOffsets(Item.NLineIndex, Str, CharOffsets, 0);
+    Str:= AStrings.LineSub(WrapItem.NLineIndex, WrapItem.NCharIndex, NLineLenTrimmed);
+    NStrLen:= Length(Str);
+    ATabHelper.CalcCharOffsets(WrapItem.NLineIndex, Str, CharOffsets, 0);
   end;
 
   if bGapGoesToEnd then
-    Result.X:= StrLen + Item.NCharIndex-1
+    Result.X:= NStrLen + WrapItem.NCharIndex-1
   else
   begin
-    AllowVirtual:= AVirtualPos and (Item.NFinal=TATWrapItemFinal.Final);
-    NPixels:= Int64(P.X)-ARect.Left + AScrollHorz.SmoothPos - ATabHelper.CharSize.XScaled*ATabHelper.CharSize.XSpacePercents*Item.NIndent div ATEditorCharXScale div 100;
+    bAllowVirtualPos:= AVirtualPos and (WrapItem.NFinal=TATWrapItemFinal.Final);
+    NPixels:= Int64(P.X)-ARect.Left + AScrollHorz.SmoothPos - ATabHelper.CharSize.XScaled*ATabHelper.CharSize.XSpacePercents*WrapItem.NIndent div ATEditorCharXScale div 100;
     Result.X:= ATabHelper.FindClickedPosition(
       Result.Y,
       Str,
-      StrLen,
+      NStrLen,
       CharOffsets,
       NPixels,
-      AllowVirtual,
-      ADetails.EndOfWrappedLine)
-      + Item.NCharIndex - 2;
+      bAllowVirtualPos,
+      APosDetails.EndOfWrappedLine)
+      + WrapItem.NCharIndex - 2;
 
     //position after end of partially folded line? return position of fold begin
-    if ADetails.EndOfWrappedLine then
+    if APosDetails.EndOfWrappedLine then
     begin
       NIndex:= AStrings.LinesFoldFrom[Result.Y, AEditorIndex];
       if NIndex>0 then
       begin
-        ADetails.EndOfPartiallyFoldedLine:= true;
+        APosDetails.EndOfPartiallyFoldedLine:= true;
         Result.X:= NIndex-1;
       end;
     end;
   end;
 
-  if Item.NFinal=TATWrapItemFinal.Final then //don't set EndOfWrappedLine for real EOL
-    ADetails.EndOfWrappedLine:= false;
+  if WrapItem.NFinal=TATWrapItemFinal.Final then //don't set EndOfWrappedLine for real EOL
+    APosDetails.EndOfWrappedLine:= false;
 end;
 
 function TATSynEdit.CaretPosToClientPos(const APos: TPoint): TATPoint;
@@ -647,7 +647,7 @@ function TATSynEdit.DoScroll_IndentFromBottom(AWrapInfoIndex, AIndentVert: integ
 //do dec(index), until offset (pixels) from caret to bottom is small enough
 var
   NPixels, NPixelsNeeded, NIndex, NCell: integer;
-  ItemGap: TATGapItem;
+  GapItem: TATGapItem;
   i: integer;
 begin
   Result:= false;
@@ -676,17 +676,17 @@ begin
     //consider gap
     if FWrapInfo[NIndex].NFinal=TATWrapItemFinal.Final then
     begin
-      ItemGap:= Gaps.Find(FWrapInfo[NIndex].NLineIndex);
-      if Assigned(ItemGap) then
-        Dec(NPixels, ItemGap.Size);
+      GapItem:= Gaps.Find(FWrapInfo[NIndex].NLineIndex);
+      if Assigned(GapItem) then
+        Dec(NPixels, GapItem.Size);
     end;
 
     //support gap before 1st line
     if (NIndex=0) then
     begin
-      ItemGap:= Gaps.Find(-1);
-      if Assigned(ItemGap) then
-        Dec(NPixels, ItemGap.Size);
+      GapItem:= Gaps.Find(-1);
+      if Assigned(GapItem) then
+        Dec(NPixels, GapItem.Size);
     end;
 
     if NPixels<0 then

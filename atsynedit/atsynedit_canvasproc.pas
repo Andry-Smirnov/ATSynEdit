@@ -9,7 +9,7 @@ unit ATSynEdit_CanvasProc;
 {$ScopedEnums on}
 
 {$I atsynedit_defines.inc}
-{$ifdef LCLGtk2}
+{$if defined(LCLGtk2)}
   {$define USE_CAIRO}
 {$endif}
 

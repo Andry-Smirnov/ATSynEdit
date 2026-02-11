@@ -1286,7 +1286,7 @@ type
     procedure MenuStdPopup(Sender: TObject);
     procedure DoCalcWrapInfos(ALine: integer; AIndentMaximal: integer;
       AItems: TATWrapItems; AConsiderFolding: boolean);
-    procedure DoCalcLineHilite(const AData: TATWrapItem;
+    procedure DoCalcLineHilite(const AWrapItem: TATWrapItem;
       var AParts: TATLineParts; ACharsSkipped, ACharsMax: integer;
       AColorBG: TColor; AColorForced: boolean; var AColorAfter: TColor;
       AMainText, AWithSelection: boolean);
@@ -1625,6 +1625,8 @@ type
     Colors: TATEditorColors;
     TagString: string; //to store plugin specific data in CudaText
     ModifiedOptions: TATEditorModifiedOptions;
+    EventCaretSlow_Filter: string; //for CudaText
+    EventCaretSlow_WithSel: boolean; //for CudaText
 
     //overrides
     constructor Create(AOwner: TComponent); override;
