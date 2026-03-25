@@ -41,8 +41,6 @@ type
   private
     FList: TFPList;
     FOnDelete: TATGapDeleteEvent;
-    FSizeOfGapTop: integer;
-    FSizeOfGap0: integer;
     function GetItem(N: integer): TATGapItem;
   public
     constructor Create; virtual;
@@ -54,12 +52,12 @@ type
     procedure Delete(N: integer);
     function Add(ALineIndex, ASize: integer; ABitmap: TBitmap; AForm: TCustomForm;
       ATag: integer;
-      AColor: TColor=clNone; ADeleteOnDelLine: boolean=true): boolean;
-    function Find(ALineIndex: integer; ATag: integer=-1): TATGapItem;
+      AColor: TColor=clNone;
+      ADeleteOnDelLine: boolean=true;
+      AOnTop: boolean=false): boolean;
+    function Find(ALineIndex, AFromGapIndex: integer): integer;
     function DeleteForLineRange(ALineFrom, ALineTo: integer): boolean;
     function DeleteWithTag(ATag: integer): boolean;
-    property SizeOfGapTop: integer read FSizeOfGapTop;
-    property SizeOfGap0: integer read FSizeOfGap0;
     procedure Update(AChange: TATLineChangeKind; ALine, AItemCount: integer);
     property OnDelete: TATGapDeleteEvent read FOnDelete write FOnDelete;
   end;
@@ -108,8 +106,6 @@ constructor TATGaps.Create;
 begin
   inherited;
   FList:= TFPList.Create;
-  FSizeOfGapTop:= 0;
-  FSizeOfGap0:= 0;
 end;
 
 destructor TATGaps.Destroy;
@@ -130,8 +126,6 @@ begin
     TObject(FList[i]).Free;
   end;
   FList.Clear;
-  FSizeOfGapTop:= 0;
-  FSizeOfGap0:= 0;
 end;
 
 function TATGaps.Count: integer; inline;
@@ -156,12 +150,6 @@ begin
   Item:= Items[N];
   if Assigned(FOnDelete) then
     FOnDelete(Self, Item.LineIndex);
-
-  if Item.LineIndex=-1 then
-    FSizeOfGapTop:= 0
-  else
-  if Item.LineIndex=0 then
-    FSizeOfGap0:= 0;
 
   Item.Free;
   FList.Delete(N);
@@ -203,13 +191,13 @@ end;
 
 function TATGaps.Add(ALineIndex, ASize: integer; ABitmap: TBitmap;
   AForm: TCustomForm; ATag: integer; AColor: TColor;
-  ADeleteOnDelLine: boolean): boolean;
+  ADeleteOnDelLine: boolean; AOnTop: boolean): boolean;
 var
   Item: TATGapItem;
+  NInsertPos: integer;
 begin
   Result:= false;
   if (ALineIndex<-1) then exit;
-  if Find(ALineIndex)<>nil then exit;
 
   Item:= TATGapItem.Create;
   Item.LineIndex:= ALineIndex;
@@ -220,29 +208,29 @@ begin
   Item.Color:= AColor;
   Item.DeleteOnDelLine:= ADeleteOnDelLine;
 
-  if ALineIndex=-1 then
-    FSizeOfGapTop:= ASize
+  if AOnTop then
+  begin
+    NInsertPos:= Find(ALineIndex, 0);
+    if NInsertPos<0 then
+      NInsertPos:= FList.Count;
+    FList.Insert(NInsertPos, Item);
+  end
   else
-  if ALineIndex=0 then
-    FSizeOfGap0:= ASize;
+    FList.Add(Item);
 
-  FList.Add(Item);
   Result:= true;
 end;
 
-function TATGaps.Find(ALineIndex: integer; ATag: integer=-1): TATGapItem;
+function TATGaps.Find(ALineIndex, AFromGapIndex: integer): integer;
 var
-  Item: TATGapItem;
-  i: integer;
+  iGap: integer;
 begin
-  Result:= nil;
-  for i:= 0 to FList.Count-1 do
+  for iGap:= AFromGapIndex to FList.Count-1 do
   begin
-    Item:= Items[i];
-    if (Item.LineIndex=ALineIndex) and
-      ((ATag<0) or (Item.Tag=ATag)) then
-      exit(Item);
+    if Items[iGap].LineIndex=ALineIndex then
+      Exit(iGap);
   end;
+  Result:= -1;
 end;
 
 procedure TATGaps.Update(AChange: TATLineChangeKind; ALine, AItemCount: integer);

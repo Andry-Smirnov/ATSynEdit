@@ -174,7 +174,7 @@ begin
 
   OptMicromapVisible:= true;
   OptComboboxShowX:= true;
-  OptMicromapScalePerColumn:= 300;
+  OptMicromapScalePerColumn:= 500;
   Micromap.Columns:= nil;
   Micromap.ColumnAdd(0, 100, clNone);
 

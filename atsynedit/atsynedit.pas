@@ -407,8 +407,8 @@ type
       write NPosInternal;
       //write SetNPos;
     procedure Clear;
-    procedure SetZero; inline;
-    procedure SetLast; inline;
+    procedure SetZero;
+    procedure SetLast;
     function TopGapVisible: boolean; inline;
     function TotalOffset: Int64;
     class operator =(const A, B: TATEditorScrollInfo): boolean;
@@ -990,6 +990,7 @@ type
     FOptCaretFixAfterRangeFolded: boolean;
     FOptCaretsMultiToColumnSel: boolean;
     FOptCaretProximityVert: integer;
+    FOptCaretProximityHorz: integer;
     FOptMarkersSize: integer;
     FOptShowScrollHint: boolean;
     FOptTextDuplicationMovesCaretDown: boolean;
@@ -1146,6 +1147,8 @@ type
     function FindLineNextNonspaceEnd(const ALine: UnicodeString; AFromOffset: integer): integer;
     function FindUnpairedBracketBackward(const ALine: UnicodeString;
       ALineIndex, AColumn: integer; out ABracketChar: char): integer;
+    function GapsSizeForRange(ALineFrom, ALineTo: integer): integer;
+    function GapsSizeForLine(ALine: integer): integer;
     function GetLineIndentInSpaces(ALine: integer): integer;
     function GetLineIndentInPixels(ALine: integer; const ACharSize: TATEditorCharSize): integer;
     procedure InitClipboardExData(out Data: TATEditorClipboardExData);
@@ -1551,10 +1554,6 @@ type
     function DoCommand_ToggleOverwrite: TATCommandResults;
     function DoCommand_ToggleWordWrap(ALoopAllValues: boolean): TATCommandResults;
     function DoCommand_ToggleUnprinted: TATCommandResults;
-    function DoCommand_ToggleUnprintedSpaces: TATCommandResults;
-    function DoCommand_ToggleUnprintedSpacesTrailing: TATCommandResults;
-    function DoCommand_ToggleUnprintedEnds: TATCommandResults;
-    function DoCommand_ToggleUnprintedEndDetails: TATCommandResults;
     function DoCommand_ToggleLineNums: TATCommandResults;
     function DoCommand_ToggleFolding: TATCommandResults;
     function DoCommand_ToggleRuler: TATCommandResults;
@@ -1627,6 +1626,9 @@ type
     ModifiedOptions: TATEditorModifiedOptions;
     EventCaretSlow_Filter: string; //for CudaText
     EventCaretSlow_WithSel: boolean; //for CudaText
+    {$ifdef WINDOWS}
+    IMELangID: Word;
+    {$endif}
 
     //overrides
     constructor Create(AOwner: TComponent); override;
@@ -1912,6 +1914,7 @@ type
     procedure WMIME_StartComposition(var Msg:TMessage); message WM_IME_STARTCOMPOSITION;
     procedure WMIME_Composition(var Msg:TMessage); message WM_IME_COMPOSITION;
     procedure WMIME_EndComposition(var Msg:TMessage); message WM_IME_ENDCOMPOSITION;
+    procedure WMINPUTLANGCHANGE(var Msg:TMessage); message WM_INPUTLANGCHANGE;
     {$endif}
 
     {$ifdef LCLGTK2}
@@ -2127,6 +2130,7 @@ type
     property OptCaretFixAfterRangeFolded: boolean read FOptCaretFixAfterRangeFolded write FOptCaretFixAfterRangeFolded default true;
     property OptCaretsMultiToColumnSel: boolean read FOptCaretsMultiToColumnSel write FOptCaretsMultiToColumnSel default cInitCaretsMultiToColumnSel;
     property OptCaretProximityVert: integer read FOptCaretProximityVert write FOptCaretProximityVert default 0;
+    property OptCaretProximityHorz: integer read FOptCaretProximityHorz write FOptCaretProximityHorz default 0;
     property OptMarkersSize: integer read FOptMarkersSize write FOptMarkersSize default cInitMarkerSize;
     property OptGutterVisible: boolean read FOptGutterVisible write FOptGutterVisible default true;
     property OptGutterPlusSize: integer read FOptGutterPlusSize write FOptGutterPlusSize default cInitGutterPlusSize;
@@ -2344,11 +2348,10 @@ function _GapsSize(
   AStrings: TATStrings;
   AGaps: TATGaps;
   AEditorIndex: integer;
-  ALineFrom, ALineTo: integer;
-  AForAllLines: boolean): integer;
+  ALineFrom, ALineTo: integer): integer;
 var
-  StItem: PATStringItem;
   GapItem: TATGapItem;
+  StItem: PATStringItem;
   iGap, iLine: integer;
   bHidden: boolean;
 begin
@@ -2357,23 +2360,23 @@ begin
   begin
     GapItem:= AGaps.Items[iGap];
     iLine:= GapItem.LineIndex;
-    if iLine=-1 then //very top gap has LineIndex=-1
-      bHidden:= false
-    else
+    if (iLine>=ALineFrom) and (iLine<=ALineTo) then
     begin
-      if not AStrings.IsIndexValid(iLine) then Break;
-      StItem:= AStrings.GetItemPtr(iLine);
-      if AEditorIndex=0 then
-        bHidden:= StItem^.Ex.Hidden_0
-      else
-        bHidden:= StItem^.Ex.Hidden_1;
-    end;
-    if not bHidden then
-      if AForAllLines or ((GapItem.LineIndex>=ALineFrom) and (GapItem.LineIndex<=ALineTo)) then
+      bHidden:= false;
+      //gap can be before 1st line, it has LineIndex=-1, it is always visible
+      if AStrings.IsIndexValid(iLine) then
+      begin
+        StItem:= AStrings.GetItemPtr(iLine);
+        if AEditorIndex=0 then
+          bHidden:= StItem^.Ex.Hidden_0 or (StItem^.Ex.FoldFrom_0>0)
+        else
+          bHidden:= StItem^.Ex.Hidden_1 or (StItem^.Ex.FoldFrom_1>0);
+      end;
+      if not bHidden then
         Inc(Result, GapItem.Size);
+    end;
   end;
 end;
-
 
 { TATMinimapThread }
 
@@ -3101,10 +3104,10 @@ begin
       NPos:= Max(0, FScrollVert.NPos);
       if FWrapInfo.IsIndexValid(NPos) then
         NLineIndex:= FWrapInfo.Data[NPos].NLineIndex;
-      NGapPos:= _GapsSize(Strings, Gaps, EditorIndex, -1, NLineIndex-1, false);
+      NGapPos:= GapsSizeForRange(-1, NLineIndex-1);
     end;
 
-    NGapAll:= _GapsSize(Strings, Gaps, EditorIndex, 0, 0, true);
+    NGapAll:= GapsSizeForRange(-1, MaxInt);
   end;
 
   if not ModeOneLine then
@@ -3909,10 +3912,10 @@ procedure TATSynEdit.DoPaintText(C: TCanvas;
   AWrapIndex: integer);
 var
   RectLine: TRect;
-  GapItemTop, GapItemCur: TATGapItem;
+  GapItem: TATGapItem;
   GutterItem: TATGutterItem;
   WrapItem: TATWrapItem;
-  NLineCount, NFoldRangeWithCaret: integer;
+  NLineCount, NFoldRangeWithCaret, NGapIndexTop, NGapIndexCurrent, NGapTopCoord: integer;
 begin
   //wrap turned off can cause bad scrollpos, fix it
   with AScrollVert do
@@ -4021,37 +4024,40 @@ begin
     end;
 
     WrapItem:= FWrapInfo[AWrapIndex];
-    GapItemTop:= nil;
-    GapItemCur:= nil;
+    GapItem:= nil;
+    NGapIndexTop:= -1;
+    NGapIndexCurrent:= -1;
 
     //consider gap before 1st line
-    if (AWrapIndex=0) and AScrollVert.TopGapVisible and (Gaps.SizeOfGapTop>0) then
+    if (AWrapIndex=0) and AScrollVert.TopGapVisible and (Gaps.Count>0) then
     begin
-      GapItemTop:= Gaps.Find(-1);
-      if Assigned(GapItemTop) then
-        Inc(RectLine.Bottom, GapItemTop.Size);
+      NGapIndexTop:= Gaps.Find(-1, 0);
+      Inc(RectLine.Bottom,
+          GapsSizeForLine(-1));
     end;
 
-    //consider gap for this line
+    //consider gap(s) for this line
     if WrapItem.NFinal=TATWrapItemFinal.Final then
     begin
-      GapItemCur:= Gaps.Find(WrapItem.NLineIndex);
-      if Assigned(GapItemCur) then
-        Inc(RectLine.Bottom, GapItemCur.Size);
+      NGapIndexCurrent:= Gaps.Find(WrapItem.NLineIndex, 0);
+      Inc(RectLine.Bottom,
+          GapsSizeForLine(WrapItem.NLineIndex));
     end;
 
     //paint gap before 1st line
-    if Assigned(GapItemTop) then
-    begin
+    if NGapIndexTop>=0 then
+    repeat
+      GapItem:= Gaps[NGapIndexTop];
       DoPaintGap(C,
         Rect(
           RectLine.Left,
           RectLine.Top,
           RectLine.Right,
-          RectLine.Top+GapItemTop.Size),
-        GapItemTop);
-      Inc(RectLine.Top, GapItemTop.Size);
-    end;
+          RectLine.Top+GapItem.Size),
+        GapItem);
+      Inc(RectLine.Top, GapItem.Size);
+      NGapIndexTop:= Gaps.Find(-1, NGapIndexTop+1);
+    until NGapIndexTop<0;
 
     DoPaintLine(C,
       RectLine,
@@ -4060,15 +4066,21 @@ begin
       AWrapIndex,
       FParts);
 
-    //paint gap after line
-    if Assigned(GapItemCur) then
+    //paint gap(s) after line
+    NGapTopCoord:= RectLine.Top+ACharSize.Y;
+    if NGapIndexCurrent>=0 then
+    repeat
+      GapItem:= Gaps[NGapIndexCurrent];
       DoPaintGap(C,
         Rect(
           RectLine.Left,
-          RectLine.Top+ACharSize.Y,
+          NGapTopCoord,
           RectLine.Right,
-          RectLine.Top+ACharSize.Y+GapItemCur.Size),
-        GapItemCur);
+          NGapTopCoord+GapItem.Size),
+        GapItem);
+      Inc(NGapTopCoord, GapItem.Size);
+      NGapIndexCurrent:= Gaps.Find(WrapItem.NLineIndex, NGapIndexCurrent+1);
+    until NGapIndexCurrent<0;
 
     if AWithGutter then
       DoPaintGutterOfLine(C,
@@ -4201,7 +4213,7 @@ begin
   bTrimmedNonSpaces:= false;
 
   NLineLen:= St.LinesLen[NLinesIndex];
-  bLineHuge:= WrapItem.NLength>cMaxFixedArray;
+  bLineHuge:= WrapItem.NLength>ATEditorMaxFixedArray;
 
   if not bLineHuge then
   begin
@@ -5432,6 +5444,7 @@ begin
 
   {$ifdef windows}
   FAdapterIME:= TATAdapterWindowsIME.Create;
+  IMELangID:=LoWord(DWORD_PTR(HKL(GetKeyboardLayout(0)))) and $03ff;
   {$endif}
 
   {$ifdef LCLCOCOA}
@@ -5788,6 +5801,7 @@ begin
   FOptCaretsPrimitiveColumnSelection:= cInitCaretsPrimitiveColumnSelection;
   FOptCaretsMultiToColumnSel:= cInitCaretsMultiToColumnSel;
   FOptCaretProximityVert:= 0;
+  FOptCaretProximityHorz:= 0;
   FOptMarkersSize:= cInitMarkerSize;
   FOptMouseEnableAll:= true;
   FOptMouseEnableNormalSelection:= true;
@@ -6066,6 +6080,8 @@ end;
 
 procedure TATSynEdit.SetSpacingTop(AValue: integer);
 begin
+  AValue:= Max(AValue, -5);
+  AValue:= Min(AValue, 15);
   if FSpacingTop=AValue then Exit;
   FSpacingTop:= AValue;
   FWrapUpdateNeeded:= true;
@@ -6073,6 +6089,8 @@ end;
 
 procedure TATSynEdit.SetSpacingBottom(AValue: integer);
 begin
+  AValue:= Max(AValue, -5);
+  AValue:= Min(AValue, 15);
   if FSpacingBottom=AValue then Exit;
   FSpacingBottom:= AValue;
   FWrapUpdateNeeded:= true;
@@ -6569,6 +6587,8 @@ begin
 end;
 
 procedure TATSynEdit.Resize;
+var
+  bNeedResetLineTop: boolean;
 begin
   inherited;
   if not IsRepaintEnabled then exit;
@@ -6577,10 +6597,18 @@ begin
   //and v-scroll-pos is in the middle of this line
   if (Width=FLastControlWidth) and
     (Height=FLastControlHeight) then exit;
+
+  bNeedResetLineTop:=
+    FPaintStarted and //avoid bNeedResetLineTop=True on first showing of 2nd ui-tab in CudaText
+    (Height>FLastControlHeight) and
+    (FScrollVert.SmoothPos>=FScrollVert.SmoothPosLast);
   FLastControlWidth:= Width;
   FLastControlHeight:= Height;
 
-  FLineTopTodo:= GetLineTop;
+  if bNeedResetLineTop then
+    FLineTopTodo:= 0 //fix outdated LineTop after height increased (CudaText #6221)
+  else
+    FLineTopTodo:= GetLineTop;
 
   Include(FPaintFlags, TATEditorInternalFlag.Resize);
   if FWrapMode<>TATEditorWrapMode.ModeOff then
@@ -6729,7 +6757,7 @@ begin
   begin
     AInfo.SetZero;
     if bConsiderGaps then
-      if AGaps.SizeOfGapTop>0 then
+      if AGaps.Find(-1, 0)>=0 then
         AInfo.NPos:= -1;
     exit
   end;
@@ -6743,8 +6771,8 @@ begin
   if bConsiderGaps then
   begin
     //for position before line=0
-    NSizeGapTop:= AGaps.SizeOfGapTop;
-    NSizeGap0:= AGaps.SizeOfGap0;
+    NSizeGapTop:= _GapsSize(AStrings, AGaps, AEditorIndex, -1, -1);
+    NSizeGap0:= _GapsSize(AStrings, AGaps, AEditorIndex, 0, 0);
 
     if NSizeGapTop>0 then
       if APos<NSizeGapTop then
@@ -6777,7 +6805,7 @@ begin
     repeat
       NLineIndex:= AWrapInfo.Data[NPos].NLineIndex - 1;
       NPixels:= APos - NPos* AInfo.CharSizeScaled div ATEditorCharXScale
-        - _GapsSize(AStrings, AGaps, AEditorIndex, -1, NLineIndex, false);
+        - _GapsSize(AStrings, AGaps, AEditorIndex, -1, NLineIndex);
       if NPos=0 then Break;
       if NLineIndex=0 then Break;
       if NPixels>=0 then Break;
@@ -6910,6 +6938,12 @@ begin
   if Assigned(FAdapterIME) then
     FAdapterIME.ImeEndComposition(Self, Msg);
 end;
+
+procedure TATSynEdit.WMINPUTLANGCHANGE(var Msg: TMessage);
+begin
+  IMELangID := LoWord(DWORD_PTR(HKL(Msg.lParam))) and $03ff;
+end;
+
 {$endif}
 
 {$ifdef LCLCOCOA}
@@ -6948,6 +6982,12 @@ begin
     (X<FRectMain.Left) and
     (X>=FRectGutter.Right) then
     X:= FRectMain.Left;
+
+  { Since strings may be inserted by the IME, an IME reset must be done first in the mouse handler
+    to avoid problems with character placement within the line. }
+  if Assigned(FAdapterIME) then
+    { commit composition string as result }
+    FAdapterIME.Stop(Self, True);
 
   PosCoord:= ATPoint(X, Y);
 
@@ -7075,9 +7115,6 @@ begin
 
   ClearSelRectPoints; //SelRect points will be set in MouseMove
 
-  if Assigned(FAdapterIME) then
-    FAdapterIME.Stop(Self, false);
-
   if MouseNiceScroll then
   begin
     MouseNiceScroll:= false;
@@ -7175,6 +7212,11 @@ begin
                 exit;
             end;
 
+            {
+            //commented: click below the text must put caret at the text end, like in Sublime
+            if not PosDetails.BelowAllText then
+              DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y);
+            }
             DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y);
 
             bUnfoldClickedPos:= (FFoldStyle in cEditorFoldStylesUnfoldOnClick)
@@ -7306,6 +7348,13 @@ begin
       if NGutterIndex=FGutterBandFolding then
       begin
         DoFoldbarClick_LineIndex(PosTextClicked.Y);
+      end
+      else
+      if NGutterIndex=FGutterBandEmpty then
+      begin
+        DoCaretSingle(PosTextClicked.X, PosTextClicked.Y);
+        FMouseDownOnEditingArea:= true; //pretend like user clicked on editing area
+        FMouseDownPnt:= PosTextClicked;
       end;
     end;
   end;
@@ -11665,6 +11714,16 @@ begin
     FStringsInt.OnGetAttribsArray:= nil;
     FStringsInt.OnSetAttribsArray:= nil;
   end;
+end;
+
+function TATSynEdit.GapsSizeForRange(ALineFrom, ALineTo: integer): integer;
+begin
+  Result:= _GapsSize(Strings, Gaps, EditorIndex, ALineFrom, ALineTo);
+end;
+
+function TATSynEdit.GapsSizeForLine(ALine: integer): integer;
+begin
+  Result:= _GapsSize(Strings, Gaps, EditorIndex, ALine, ALine);
 end;
 
 

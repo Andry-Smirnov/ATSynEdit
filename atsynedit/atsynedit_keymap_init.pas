@@ -132,13 +132,7 @@ begin
   M.Add(cCommand_ToggleReadOnly, 'toggle read-only mode', [], []);
   M.Add(cCommand_ToggleWordWrap, 'toggle word-wrap mode (off / on)', [scXControl+VK_U], []);
   M.Add(cCommand_ToggleWordWrapAlt, 'toggle word-wrap mode (off / on_by_window / on_by_margin)', [], []);
-
-  M.Add(cCommand_ToggleUnprinted, 'toggle unprinted chars: enable other options', [], []);
-  M.Add(cCommand_ToggleUnprintedSpaces, 'toggle unprinted chars: spaces/tabs', [], []);
-  M.Add(cCommand_ToggleUnprintedSpacesTrailing, 'toggle unprinted chars: spaces/tabs trailing only', [], []);
-  M.Add(cCommand_ToggleUnprintedEnds, 'toggle unprinted chars: ends', [], []);
-  M.Add(cCommand_ToggleUnprintedEndDetails, 'toggle unprinted chars: end details', [], []);
-
+  M.Add(cCommand_ToggleUnprinted, 'toggle show unprinted chars', [], []);
   M.Add(cCommand_ToggleLineNums, 'toggle show line numbers', [], []);
   M.Add(cCommand_ToggleFolding, 'toggle show folding bar', [], []);
   M.Add(cCommand_ToggleRuler, 'toggle show ruler', [], []);
@@ -226,8 +220,8 @@ begin
   M.Add(cCommand_TextCaseInvert, 'convert case: invert case', [], []);
   M.Add(cCommand_TextCaseSentence, 'convert case: sentence case', [], []);
 
-  M.Add(cCommand_TextTrimSpacesLeft, 'trim spaces: left', [], []);
-  M.Add(cCommand_TextTrimSpacesRight, 'trim spaces: right', [], []);
+  M.Add(cCommand_TextTrimSpacesRight, 'trim spaces: trailing', [], []);
+  M.Add(cCommand_TextTrimSpacesLeft, 'trim spaces: leading', [], []);
   M.Add(cCommand_TextTrimSpacesAll, 'trim spaces: all', [], []);
 
   M.Add(cCommand_RepeatTextCommand, 'repeat last text command', [], []);
