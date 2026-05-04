@@ -230,7 +230,11 @@ type
     Up,
     Down,
     PageUp,
-    PageDown
+    PageDown,
+    LineBegin,
+    LineEnd,
+    AbsBegin,
+    AbsEnd
     );
 
   TATEditorScrollbarsArrowsKind = (
@@ -446,6 +450,7 @@ type
   TATSynEditClickEvent = procedure(Sender: TObject; var AHandled: boolean) of object;
   TATSynEditClickMoveCaretEvent = procedure(Sender: TObject; APrevPnt, ANewPnt: TPoint) of object;
   TATSynEditClickGapEvent = procedure(Sender: TObject; AGapItem: TATGapItem; APos: TPoint) of object;
+  TATSynEditClickBeforeEvent = procedure(Sender: TObject; AX, AY: integer; var AHandled: boolean) of object;
   TATSynEditCommandEvent = procedure(Sender: TObject; ACommand: integer; AInvoke: TATCommandInvoke; const AText: string; var AHandled: boolean) of object;
   TATSynEditCommandAfterEvent = procedure(Sender: TObject; ACommand: integer; const AText: string) of object;
   TATSynEditClickGutterEvent = procedure(Sender: TObject; ABand: integer; ALineNum: integer; var AHandled: boolean) of object;
@@ -714,6 +719,7 @@ type
     FMouseDragCoord: TATPoint;
     FMouseDownPnt: TPoint;
     FMouseDownPnt_ColumnSelOrigin: TPoint;
+    FMouseDownCaretPositions: array of TPoint;
     FMouseDownAndColumnSelection: boolean;
     FMouseDownGutterLineNumber: integer;
     FMouseDownOnEditingArea: boolean;
@@ -724,6 +730,7 @@ type
     FMouseDownWithCtrl: boolean;
     FMouseDownWithAlt: boolean;
     FMouseDownWithShift: boolean;
+    FMouseClickWasHandled: boolean;
     FMouseNiceScrollPos: TATPoint;
     FMouseDragDropping: boolean;
     FMouseDragDroppingReal: boolean;
@@ -764,6 +771,7 @@ type
     FOnClickGap: TATSynEditClickGapEvent;
     FOnClickEndSelect: TATSynEditClickMoveCaretEvent;
     FOnClickLink: TATSynEditClickLinkEvent;
+    FOnClickBefore: TATSynEditClickBeforeEvent;
     FOnIdle: TNotifyEvent;
     FOnChange: TNotifyEvent;
     FOnChangeDetailed: TATSynEditChangeDetailedEvent;
@@ -780,6 +788,7 @@ type
     FOnDrawGap: TATSynEditDrawGapEvent;
     FOnDrawLine: TATSynEditDrawLineEvent;
     FOnDrawMicromap: TATSynEditDrawRectEvent;
+    FOnDrawEditorBefore: TATSynEditDrawRectEvent;
     FOnDrawEditor: TATSynEditDrawRectEvent;
     FOnDrawRuler: TATSynEditDrawRulerEvent;
     FOnCommand: TATSynEditCommandEvent;
@@ -921,6 +930,8 @@ type
     FFoldingAsStringTodo: string;
 
     //these options are implemented in CudaText, they are dummy here
+    FOptUnderlineHtmlColor: boolean;
+    FOptUnderlineHtmlColorSize: integer;
     FOptThemed: boolean;
     FOptAutoPairForMultiCarets: boolean;
     FOptAutoPairChars: UnicodeString;
@@ -1082,6 +1093,7 @@ type
     FOptKeyHomeEndNavigateWrapped: boolean;
     FOptKeyTabIndents: boolean;
     FOptKeyTabIndentsVerticalBlock: boolean;
+    FOptKeyColumnSelectionWithoutKey: boolean;
     FOptCopyLinesIfNoSel: boolean;
     FOptCutLinesIfNoSel: boolean;
     FOptCopyColumnBlockAlignedBySpaces: boolean;
@@ -1130,6 +1142,8 @@ type
     FOptDimUnfocusedBack: integer;
 
     //
+    procedure DoCalcRangeLineLength(ALineFrom, ALineTo: integer; out ALenTotal, ALenNonspace: integer);
+    procedure DoCalcRangeLineIndent(ALineFrom, ALineTo: integer; out AIndent: integer);
     function DoCalcFoldDeepestRangeContainingCaret: integer;
     function DoCalcForegroundFromAttribs(AX, AY: integer; var AColor: TColor;
       var AFontStyles: TFontStyles): boolean;
@@ -1196,7 +1210,8 @@ type
       AProximity, AIndentVert: integer): boolean;
     function DoCaretApplyProximityToHorzEdge(ACaretCoordX: Int64;
       AProximity, AIndentHorz: integer): boolean;
-    procedure DoCaretsAddOnColumnBlock(APos1, APos2: TPoint; const ARect: TRect);
+    procedure DoCaretsAddOnColumnBlock(ALineFrom, ALineTo, AColFrom, AColTo: integer;
+      ACaretAtLeft: boolean);
     procedure DoCaretsFixForSurrogatePairs(AMoveRight: boolean);
     function DoCaretsKeepOnScreen(ADirection: TATEditorDirection): boolean;
     procedure DoCaretsAssign(NewCarets: TATCarets);
@@ -1518,7 +1533,6 @@ type
     procedure DoCommandResults(ACmd: integer; ARes: TATCommandResults);
     function DoCommand_TextInsertAtCarets(const AText: atString; AKeepCaret,
       AOvrMode, ASelectThen, AInsertAtLineStarts: boolean): TATCommandResults;
-    function DoCommand_ColumnSelectWithoutKey(AValue: boolean): TATCommandResults;
     function DoCommand_FoldLevel(ALevel: integer): TATCommandResults;
     function DoCommand_FoldAll: TATCommandResults;
     function DoCommand_FoldUnAll: TATCommandResults;
@@ -1531,7 +1545,6 @@ type
     function DoCommand_MoveSelectionUpDown(ADown: boolean): TATCommandResults;
     function DoCommand_TextInsertEmptyAboveBelow(ADown: boolean): TATCommandResults;
     function DoCommand_SelectColumnToDirection(ADir: TATEditorSelectColumnDirection): TATCommandResults;
-    function DoCommand_SelectColumnToLineEdge(AToEnd: boolean): TATCommandResults;
     function DoCommand_SelectFoldingRangeAtCaret: TATCommandResults;
     function DoCommand_RemoveOneCaret(AFirstCaret: boolean): TATCommandResults;
     function DoCommand_TextInsertColumnBlockOnce(const AText: string; AKeepCaret: boolean): TATCommandResults;
@@ -1876,6 +1889,7 @@ type
     function DoGetMarkedLines(out ALine1, ALine2: integer): boolean;
     function DoGetLinkAtPos(AX, AY: integer): atString;
     function DoGetGapRect(AIndex: integer; out ARect: TRect): boolean;
+    procedure EditingDone; override;
 
   protected
     IsRepaintEnabled: boolean;
@@ -1982,6 +1996,7 @@ type
     property OnClickEndSelect: TATSynEditClickMoveCaretEvent read FOnClickEndSelect write FOnClickEndSelect;
     property OnClickGap: TATSynEditClickGapEvent read FOnClickGap write FOnClickGap;
     property OnClickLink: TATSynEditClickLinkEvent read FOnClickLink write FOnClickLink;
+    property OnClickBefore: TATSynEditClickBeforeEvent read FOnClickBefore write FOnClickBefore;
     property OnCheckInput: TATSynEditCheckInputEvent read FOnCheckInput write FOnCheckInput;
     property OnIdle: TNotifyEvent read FOnIdle write FOnIdle;
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
@@ -2000,6 +2015,7 @@ type
     property OnDrawLine: TATSynEditDrawLineEvent read FOnDrawLine write FOnDrawLine;
     property OnDrawGap: TATSynEditDrawGapEvent read FOnDrawGap write FOnDrawGap;
     property OnDrawMicromap: TATSynEditDrawRectEvent read FOnDrawMicromap write FOnDrawMicromap;
+    property OnDrawEditorBefore: TATSynEditDrawRectEvent read FOnDrawEditorBefore write FOnDrawEditorBefore;
     property OnDrawEditor: TATSynEditDrawRectEvent read FOnDrawEditor write FOnDrawEditor;
     property OnDrawRuler: TATSynEditDrawRulerEvent read FOnDrawRuler write FOnDrawRuler;
     property OnCalcCaretsCoords: TNotifyEvent read FOnCalcCaretsCoords write FOnCalcCaretsCoords;
@@ -2029,6 +2045,8 @@ type
     property WantReturns: boolean read FWantReturns write FWantReturns default true;
 
     //options
+    property OptUnderlineHtmlColor: boolean read FOptUnderlineHtmlColor write FOptUnderlineHtmlColor default false;
+    property OptUnderlineHtmlColorSize: integer read FOptUnderlineHtmlColorSize write FOptUnderlineHtmlColorSize default 3;
     property OptThemed: boolean read FOptThemed write FOptThemed default false;
     property OptAutoPairForMultiCarets: boolean read FOptAutoPairForMultiCarets write FOptAutoPairForMultiCarets default cInitAutoPairForMultiCarets;
     property OptAutoPairChars: UnicodeString read FOptAutoPairChars write FOptAutoPairChars stored false;
@@ -2262,6 +2280,7 @@ type
     property OptKeyEndToNonSpace: boolean read FOptKeyEndToNonSpace write FOptKeyEndToNonSpace default true;
     property OptKeyTabIndents: boolean read FOptKeyTabIndents write FOptKeyTabIndents default true;
     property OptKeyTabIndentsVerticalBlock: boolean read FOptKeyTabIndentsVerticalBlock write FOptKeyTabIndentsVerticalBlock default false;
+    property OptKeyColumnSelectionWithoutKey: boolean read FOptKeyColumnSelectionWithoutKey write FOptKeyColumnSelectionWithoutKey default false;
     property OptIndentSize: integer read FOptIndentSize write FOptIndentSize default 2;
              // N>0: use N spaces
              // N<0: use N tabs
@@ -3685,6 +3704,9 @@ begin
     DoPaintMinimapAllToBGRABitmap;
     {$endif}
   end;
+
+  if Assigned(FOnDrawEditorBefore) then
+    FOnDrawEditorBefore(Self, C, FRectMain);
 
   UpdateLinksAttribs(ALineFrom);
   DoPaintText(C, FRectMain, FCharSize, FOptGutterVisible, FScrollHorz, FScrollVert, NWrapIndex);
@@ -5567,6 +5589,9 @@ begin
   FOptMaskCharUsed:= false;
   FOptIdleInterval:= cInitIdleInterval;
 
+  FOptUnderlineHtmlColor:= false;
+  FOptUnderlineHtmlColorSize:= 3;
+
   FOptAutoPairForMultiCarets:= cInitAutoPairForMultiCarets;
   FOptAutoPairChars:= '([{';
   FOptAutoPair_DisableCharDoubling:= false;
@@ -7187,7 +7212,13 @@ begin
           Strings.SetGroupMark;
 
           FSelRect:= cRectEmpty;
-          DoCaretSingleAsIs;
+
+          bClickHandled:= false;
+          if Assigned(FOnClickBefore) then
+            FOnClickBefore(Self, FMouseDownPnt.X, FMouseDownPnt.Y, bClickHandled);
+          FMouseClickWasHandled:= bClickHandled;
+          if not bClickHandled then
+            DoCaretSingleAsIs;
 
           if Assigned(PosDetails.OnGapItem) then
           begin
@@ -7212,12 +7243,14 @@ begin
                 exit;
             end;
 
-            {
-            //commented: click below the text must put caret at the text end, like in Sublime
-            if not PosDetails.BelowAllText then
-              DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y);
-            }
-            DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y);
+            if not bClickHandled then
+              DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y)
+            else
+            begin
+              //reposition the first caret without removing other carets
+              if Carets.Count > 0 then
+                Carets[0].Change(FMouseDownPnt.X, FMouseDownPnt.Y, -1, -1);
+            end;
 
             bUnfoldClickedPos:= (FFoldStyle in cEditorFoldStylesUnfoldOnClick)
               //ignore click on fold-mark, because we handle double-click on it (select entire range)
@@ -7388,6 +7421,7 @@ begin
   if not OptMouseEnableAll then exit;
   inherited;
   PosCoord:= ATPoint(X, Y);
+  FMouseClickWasHandled:= false;
 
   if FOptShowMouseSelFrame or FMouseDownAndColumnSelection then
     if FMouseDragCoord.X>=0 then
@@ -7486,11 +7520,13 @@ begin
   FMouseDownWithCtrl:= false;
   FMouseDownWithAlt:= false;
   FMouseDownWithShift:= false;
+  FMouseClickWasHandled:= false;
   FMouseDragDropping:= false;
   FMouseDragDroppingReal:= false;
   FMouseDragMinimap:= false;
   FMouseDragCoord:= ATPoint(-1, -1);
   FMouseRightClickOnGutterIsHandled:= false;
+  SetLength(FMouseDownCaretPositions, 0);
 
   if Assigned(FTimerScroll) then
     FTimerScroll.Enabled:= false;
@@ -7660,6 +7696,7 @@ var
   nScreenDelta: integer;
   {$endif}
   Caret: TATCaretItem;
+  DX, DY, iCaret: integer;
   //
   procedure UpdatePntText;
   var
@@ -7929,7 +7966,8 @@ begin
               begin
                 //normal selection
                 if not bSelectShiftExpanding then //check it to allow expanding of selection by Shift+[mouse drag]
-                  DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y);
+                  if not FMouseClickWasHandled then
+                    DoCaretSingle(FMouseDownPnt.X, FMouseDownPnt.Y);
                 //writeln('DoCaretSingle: '+inttostr(FMouseDownPnt.X)+':'+inttostr(FMouseDownPnt.Y));
 
                 if FMouseDownDouble and FOptMouse2ClickDragSelectsWords then
@@ -7959,7 +7997,41 @@ begin
                 end
                 else
                 begin
-                  Carets[0].SelectToPoint(PntText.X, PntText.Y);
+                  if Carets.Count > 1 then
+                  begin
+                    // Multi-caret: propagate the drag delta to every caret.
+                    // Each caret extends its selection by the same (DX, DY) offset
+                    // as the primary caret, mirroring exactly what Shift+Arrow already does.
+                    // This works correctly whether the ranges are on the same line or different lines.
+                    DX:= PntText.X - FMouseDownPnt.X;
+                    DY:= PntText.Y - FMouseDownPnt.Y;
+                    // Save anchor positions on first MouseMove after click was handled.
+                    // Done here (not in MouseDown) so Python has time to reposition
+                    // secondary carets via on_caret before we snapshot their positions.
+                    if FMouseClickWasHandled and (Length(FMouseDownCaretPositions)=0) then
+                    begin
+                      SetLength(FMouseDownCaretPositions, Carets.Count);
+                      for iCaret:= 0 to Carets.Count-1 do
+                      begin
+                        FMouseDownCaretPositions[iCaret].X:= Carets[iCaret].PosX;
+                        FMouseDownCaretPositions[iCaret].Y:= Carets[iCaret].PosY;
+                      end;
+                    end;
+                    for iCaret:= 0 to Carets.Count-1 do
+                    begin
+                      // Use saved anchor positions to avoid delta accumulation.
+                      if iCaret < Length(FMouseDownCaretPositions) then
+                        Carets[iCaret].SelectToPoint(
+                          FMouseDownCaretPositions[iCaret].X + DX,
+                          FMouseDownCaretPositions[iCaret].Y + DY)
+                      else
+                        Carets[iCaret].SelectToPoint(
+                          Carets[iCaret].PosX + DX,
+                          Carets[iCaret].PosY + DY);
+                    end;
+                  end
+                  else
+                    Carets[0].SelectToPoint(PntText.X, PntText.Y);
                   //writeln('Carets[0].SelToPnt: '+inttostr(PntText.X)+':'+inttostr(PntText.Y));
                 end;
               end;
@@ -10971,6 +11043,13 @@ begin
   Result:= true;
 end;
 
+procedure TATSynEdit.EditingDone;
+begin
+  if Assigned(FAdapterIME) then
+    FAdapterIME.Stop(Self,True);
+  inherited EditingDone;
+end;
+
 procedure TATSynEdit.SetFontItalic(AValue: TFont);
 begin
   FFontItalic.Assign(AValue);
@@ -11724,6 +11803,60 @@ end;
 function TATSynEdit.GapsSizeForLine(ALine: integer): integer;
 begin
   Result:= _GapsSize(Strings, Gaps, EditorIndex, ALine, ALine);
+end;
+
+procedure TATSynEdit.DoCalcRangeLineLength(ALineFrom, ALineTo: integer; out
+  ALenTotal, ALenNonspace: integer);
+var
+  St: TATStrings;
+  S: UnicodeString;
+  iLine, NLenTotal, NLenNonspace: integer;
+begin
+  ALenTotal:= 0;
+  ALenNonspace:= 0;
+
+  St:= Strings;
+  for iLine:= ALineFrom to Min(ALineTo, St.Count-1) do
+  begin
+    NLenTotal:= St.LinesLen[iLine];
+    NLenNonspace:= NLenTotal;
+
+    if NLenTotal<=TATEditorOptions.MaxLineLenToCalculateRangeIndents then
+    begin
+      S:= St.Lines[iLine];
+      NLenNonspace:= SGetNonSpaceLength(S);
+      NLenTotal:= TabHelper.CharPosToColumnPos(iLine, S, NLenTotal);
+      NLenNonspace:= TabHelper.CharPosToColumnPos(iLine, S, NLenNonspace);
+    end;
+
+    if ALenTotal<NLenTotal then
+      ALenTotal:= NLenTotal;
+    if ALenNonspace<NLenNonspace then
+      ALenNonspace:= NLenNonspace;
+  end;
+end;
+
+procedure TATSynEdit.DoCalcRangeLineIndent(ALineFrom, ALineTo: integer; out AIndent: integer);
+var
+  St: TATStrings;
+  S: UnicodeString;
+  iLine, NIndent: integer;
+begin
+  AIndent:= 1000;
+
+  St:= Strings;
+  for iLine:= ALineFrom to Min(ALineTo, St.Count-1) do
+  begin
+    if St.LinesLen[iLine]>TATEditorOptions.MaxLineLenToCalculateRangeIndents then
+    begin
+      AIndent:= 0;
+      Exit;
+    end;
+    S:= St.Lines[iLine];
+    NIndent:= SGetIndentChars(S);
+    if AIndent>NIndent then
+      AIndent:= NIndent;
+  end;
 end;
 
 

@@ -93,6 +93,7 @@ end;
 function TATSynEdit.DoCommand_SelectColumnToDirection(ADir: TATEditorSelectColumnDirection): TATCommandResults;
 var
   N, NPageLines: integer;
+  NLenTotal, NLenNonspace, NIndent: integer;
   bDown, bHadSelection: boolean;
 begin
   Result:= [];
@@ -155,6 +156,57 @@ begin
         else
           Result:= [TATCommandResult.KeepColumnSel, TATCommandResult.CaretTop];
       end;
+
+    TATEditorSelectColumnDirection.LineBegin:
+      begin
+        DoCalcRangeLineIndent(
+          Min(FSelRectBegin.Y, FSelRectEnd.Y),
+          Max(FSelRectBegin.Y, FSelRectEnd.Y),
+          NIndent
+          );
+        if (FSelRectEnd.X<>NIndent) and FOptKeyHomeToNonSpace then
+          FSelRectEnd.X:= NIndent
+        else
+          FSelRectEnd.X:= 0;
+        Result:= [TATCommandResult.KeepColumnSel, TATCommandResult.CaretAny];
+      end;
+
+    TATEditorSelectColumnDirection.LineEnd:
+      begin
+        DoCalcRangeLineLength(
+          Min(FSelRectBegin.Y, FSelRectEnd.Y),
+          Max(FSelRectBegin.Y, FSelRectEnd.Y),
+          NLenTotal,
+          NLenNonspace
+          );
+        if (FSelRectEnd.X<>NLenNonspace) and FOptKeyEndToNonSpace then
+          FSelRectEnd.X:= NLenNonspace
+        else
+          FSelRectEnd.X:= NLenTotal;
+        Result:= [TATCommandResult.KeepColumnSel, TATCommandResult.CaretAny];
+      end;
+
+    TATEditorSelectColumnDirection.AbsBegin:
+      begin
+        FSelRectEnd.X:= 0;
+        FSelRectEnd.Y:= 0;
+        Result:= [TATCommandResult.KeepColumnSel, TATCommandResult.CaretAny];
+      end;
+
+    TATEditorSelectColumnDirection.AbsEnd:
+      begin
+        N:= Strings.Count-1;
+        if N<0 then Exit([]);
+        DoCalcRangeLineLength(
+          Min(FSelRectBegin.Y, FSelRectEnd.Y),
+          N,
+          NLenTotal,
+          NLenNonspace
+          );
+        FSelRectEnd.X:= NLenTotal;
+        FSelRectEnd.Y:= N;
+        Result:= [TATCommandResult.KeepColumnSel, TATCommandResult.CaretAny];
+      end;
   end;
 
   //this makes multi-carets from FSelRectBegin/FSelRectEnd
@@ -174,41 +226,6 @@ begin
       DoSelect_None;
 
   //DebugSelRect; ////debug
-end;
-
-function TATSynEdit.DoCommand_SelectColumnToLineEdge(AToEnd: boolean): TATCommandResults;
-var
-  St: TATStrings;
-  NPos, i, Y1, Y2: integer;
-begin
-  Result:= [];
-  if Carets.Count=0 then Exit;
-
-  if not IsSelColumn then Exit;
-  //maybe todo: make column sel if normal sel active here
-  //like DoCommand_SelectColumnToDirection
-
-  St:= Strings;
-
-  if not AToEnd then
-  begin
-    FSelRectEnd.X:= 0;
-  end
-  else
-  begin
-    NPos:= 0;
-    Y1:= FSelRectBegin.Y;
-    Y2:= FSelRectEnd.Y;
-    if Y1>Y2 then
-      SwapInt(Y1, Y2);
-    for i:= Y1 to Y2 do
-      if St.IsIndexValid(i) then
-        NPos:= Max(NPos, FTabHelper.TabsToSpaces_Length(i, St.Lines[i], -1));
-    FSelRectEnd.X:= NPos;
-  end;
-
-  DoSelect_ColumnBlock_FromPointsColumns(FSelRectBegin, FSelRectEnd);
-  Result:= [TATCommandResult.KeepColumnSel, TATCommandResult.CaretBottom];
 end;
 
 function TATSynEdit.DoCommand_SelectFoldingRangeAtCaret: TATCommandResults;
@@ -384,9 +401,4 @@ begin
   Result:= [TATCommandResult.CaretAny];
 end;
 
-function TATSynEdit.DoCommand_ColumnSelectWithoutKey(AValue: boolean): TATCommandResults;
-begin
-  FOptMouseColumnSelectionWithoutKey:= AValue;
-  Result:= [TATCommandResult.State];
-end;
 

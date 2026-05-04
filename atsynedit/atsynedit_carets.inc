@@ -24,27 +24,35 @@ begin
 end;
 
 
-procedure TATSynEdit.DoCaretsAddOnColumnBlock(APos1, APos2: TPoint; const ARect: TRect);
+procedure TATSynEdit.DoCaretsAddOnColumnBlock(ALineFrom, ALineTo, AColFrom, AColTo: integer;
+  ACaretAtLeft: boolean);
 var
   St: TATStrings;
   bChanged: boolean;
-  i: integer;
+  Y, X1, X2: integer;
 begin
   St:= Strings;
   bChanged:= false;
-  for i:= APos1.Y to APos2.Y do
+
+  Y:= St.Count-1;
+  if Y<0 then exit;
+  ALineFrom:= Min(ALineFrom, Y);
+  ALineTo:= Min(ALineTo, Y);
+  if ALineFrom>ALineTo then exit;
+
+  Carets.Clear;
+
+  for Y:= ALineFrom to ALineTo do
   begin
-    if i=APos1.Y then
-      Carets.Clear;
-    Carets.Add(
-      St.ColumnPosToCharPos(i, ARect.Right, FTabHelper),
-      i,
-      St.ColumnPosToCharPos(i, ARect.Left, FTabHelper),
-      i,
-      false{AWithEvent}
-      );
+    X1:= St.ColumnPosToCharPos(Y, AColTo, FTabHelper);
+    X2:= St.ColumnPosToCharPos(Y, AColFrom, FTabHelper);
+    if ACaretAtLeft then
+      SwapInt(X1, X2);
+
+    Carets.Add(X1, Y, X2, Y, false{AWithEvent});
     bChanged:= true;
   end;
+
   if bChanged then
     Carets.DoChanged;
 end;

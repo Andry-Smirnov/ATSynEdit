@@ -549,6 +549,7 @@ var
   //Pos1Col/Pos2Col hold column-pos
   Pos1Col, Pos2Col: TPoint;
   PosTarget: TPoint;
+  bCaretAtLeft: boolean;
 begin
   St:= Strings;
 
@@ -596,7 +597,15 @@ begin
     SwapInt(Pos1Col.Y, Pos2Col.Y);
 
   if FOptCaretsAddedToColumnSelection then
-    DoCaretsAddOnColumnBlock(Pos1Col, Pos2Col, FSelRect)
+  begin
+    bCaretAtLeft:= FSelRectBegin.X>FSelRectEnd.X;
+    DoCaretsAddOnColumnBlock(
+      Pos1Col.Y,
+      Pos2Col.Y,
+      FSelRect.Left,
+      FSelRect.Right,
+      bCaretAtLeft);
+  end
   else
   begin
     //single caret at moving block edge

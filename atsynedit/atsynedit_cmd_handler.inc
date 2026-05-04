@@ -399,114 +399,98 @@ begin
     //Shift+arrows must make column selection, if column select option on
     cCommand_KeyLeft:
       Result:= DoCommand_KeyLeft(false);
+
     cCommand_KeyLeft_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
           Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.Left)
         else
           Result:= DoCommand_KeyLeft(true);
-          }
-         OptMouseColumnSelectionWithoutKey:= false;
-         Result:= DoCommand_KeyLeft(true);
        end;
 
     cCommand_KeyRight:
       Result:= DoCommand_KeyRight(false);
+
     cCommand_KeyRight_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
           Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.Right)
         else
           Result:= DoCommand_KeyRight(true);
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyRight(true);
       end;
 
     cCommand_KeyUp:
       Result:= DoCommand_KeyUpDown(false, 1, false, false);
+
     cCommand_KeyUp_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
           Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.Up)
         else
-          Result:= DoCommand_KeyUpDown(false, 1, false);
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyUpDown(false, 1, false, true);
+          Result:= DoCommand_KeyUpDown(false, 1, false, true);
       end;
 
     cCommand_KeyDown:
       Result:= DoCommand_KeyUpDown(true, 1, false, false);
+
     cCommand_KeyDown_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
           Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.Down)
         else
-          Result:= DoCommand_KeyUpDown(true, 1, false);
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyUpDown(true, 1, false, true);
+          Result:= DoCommand_KeyUpDown(true, 1, false, true);
       end;
 
     cCommand_KeyHome:
       Result:= DoCommand_KeyHome;
+
     cCommand_KeyHome_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
-          Result:= DoCommand_SelectColumnToLineEdge(false)
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
+          Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.LineBegin)
         else
           Result:= DoCommand_KeyHome;
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyHome;
       end;
 
     cCommand_KeyEnd:
       Result:= DoCommand_KeyEnd;
+
     cCommand_KeyEnd_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
-          Result:= DoCommand_SelectColumnToLineEdge(true)
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
+          Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.LineEnd)
         else
           Result:= DoCommand_KeyEnd;
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyEnd;
       end;
 
     cCommand_KeyPageUp:
       Result:= DoCommand_KeyUpDown(false, GetPageLines, FOptKeyPageKeepsRelativePos, false);
+
     cCommand_KeyPageUp_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
           Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.PageUp)
         else
-          Result:= DoCommand_KeyUpDown(false, GetPageLines, FOptKeyPageKeepsRelativePos);
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyUpDown(false, GetPageLines, FOptKeyPageKeepsRelativePos, true);
+          Result:= DoCommand_KeyUpDown(false, GetPageLines, FOptKeyPageKeepsRelativePos, true);
       end;
 
     cCommand_KeyPageDown:
       Result:= DoCommand_KeyUpDown(true, GetPageLines, FOptKeyPageKeepsRelativePos, false);
+
     cCommand_KeyPageDown_Sel:
       begin
-        {
-        if OptMouseColumnSelectionWithoutKey then
+        OptMouseColumnSelectionWithoutKey:= false;
+        if OptKeyColumnSelectionWithoutKey then
           Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.PageDown)
         else
-          Result:= DoCommand_KeyUpDown(true, GetPageLines, FOptKeyPageKeepsRelativePos);
-          }
-        OptMouseColumnSelectionWithoutKey:= false;
-        Result:= DoCommand_KeyUpDown(true, GetPageLines, FOptKeyPageKeepsRelativePos, true);
+          Result:= DoCommand_KeyUpDown(true, GetPageLines, FOptKeyPageKeepsRelativePos, true);
       end;
 
     cCommand_ColSelectLeft:        Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.Left);
@@ -515,16 +499,62 @@ begin
     cCommand_ColSelectDown:        Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.Down);
     cCommand_ColSelectPageUp:      Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.PageUp);
     cCommand_ColSelectPageDown:    Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.PageDown);
-    cCommand_ColSelectToLineBegin: Result:= DoCommand_SelectColumnToLineEdge(false);
-    cCommand_ColSelectToLineEnd:   Result:= DoCommand_SelectColumnToLineEdge(true);
+    cCommand_ColSelectToLineBegin: Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.LineBegin);
+    cCommand_ColSelectToLineEnd:   Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.LineEnd);
 
-    cCommand_ColSelectWithoutKey_On:
-      Result:= DoCommand_ColumnSelectWithoutKey(true);
-    cCommand_ColSelectWithoutKey_Off:
-      Result:= DoCommand_ColumnSelectWithoutKey(false);
-    cCommand_ColSelectWithoutKey_Toggle:
+    cCommand_MouseColSelectWithoutKey_On:
+      begin
+        if not OptMouseColumnSelectionWithoutKey then
+        begin
+          OptMouseColumnSelectionWithoutKey:= true;
+          OptKeyColumnSelectionWithoutKey:= false;
+          Result:= [TATCommandResult.State];
+        end
+        else
+          Result:= [];
+      end;
+    cCommand_MouseColSelectWithoutKey_Off:
+      begin
+        if OptMouseColumnSelectionWithoutKey then
+        begin
+          OptMouseColumnSelectionWithoutKey:= false;
+          Result:= [TATCommandResult.State];
+        end
+        else
+          Result:= [];
+      end;
+    cCommand_MouseColSelectWithoutKey_Toggle:
       begin
         OptMouseColumnSelectionWithoutKey:= not OptMouseColumnSelectionWithoutKey;
+        OptKeyColumnSelectionWithoutKey:= false;
+        Result:= [TATCommandResult.State];
+      end;
+
+    cCommand_KeyboardColSelectWithoutKey_On:
+      begin
+        if not OptKeyColumnSelectionWithoutKey then
+        begin
+          OptKeyColumnSelectionWithoutKey:= true;
+          OptMouseColumnSelectionWithoutKey:= false;
+          Result:= [TATCommandResult.State];
+        end
+        else
+          Result:= [];
+      end;
+    cCommand_KeyboardColSelectWithoutKey_Off:
+      begin
+        if OptKeyColumnSelectionWithoutKey then
+        begin
+          OptKeyColumnSelectionWithoutKey:= false;
+          Result:= [TATCommandResult.State];
+        end
+        else
+          Result:= [];
+      end;
+    cCommand_KeyboardColSelectWithoutKey_Toggle:
+      begin
+        OptKeyColumnSelectionWithoutKey:= not OptKeyColumnSelectionWithoutKey;
+        OptMouseColumnSelectionWithoutKey:= false;
         Result:= [TATCommandResult.State];
       end;
 
@@ -564,10 +594,25 @@ begin
     cCommand_SelectWords:              Result:= DoCommand_SelectWords;
     cCommand_SelectLines:              Result:= DoCommand_SelectLines;
 
-    cCommand_GotoTextBegin,
-    cCommand_GotoTextBegin_Sel:        Result:= DoCommand_GotoTextBegin;
-    cCommand_GotoTextEnd,
-    cCommand_GotoTextEnd_Sel:          Result:= DoCommand_GotoTextEnd;
+    cCommand_GotoTextBegin:
+      Result:= DoCommand_GotoTextBegin;
+    cCommand_GotoTextBegin_Sel:
+      begin
+        if OptKeyColumnSelectionWithoutKey then
+          Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.AbsBegin)
+        else
+          Result:= DoCommand_GotoTextBegin;
+      end;
+
+    cCommand_GotoTextEnd:
+      Result:= DoCommand_GotoTextEnd;
+    cCommand_GotoTextEnd_Sel:
+      begin
+        if OptKeyColumnSelectionWithoutKey then
+          Result:= DoCommand_SelectColumnToDirection(TATEditorSelectColumnDirection.AbsEnd)
+        else
+          Result:= DoCommand_GotoTextEnd;
+      end;
 
     cCommand_GotoScreenTop:            Result:= DoCommand_GotoScreenSide(TATCaretScreenSide.Top);
     cCommand_GotoScreenBottom:         Result:= DoCommand_GotoScreenSide(TATCaretScreenSide.Bottom);

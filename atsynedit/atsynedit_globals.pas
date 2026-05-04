@@ -56,6 +56,8 @@ type
     SampleChar = '0';
     MaxVisibleColumns = 500;
     MaxLineLenToCalculateAutoIndent = 200;
+    MaxLineLenToCalculateRangeIndents = 1000;
+    MaxLineLenToUnderlineHtmlColors = 500;
     GutterShift2ndIconRightByPercents = 50;
 
     GutterTagBookmarks = 1;
@@ -101,7 +103,6 @@ type
     UnprintedReplaceSpec: boolean;
     UnprintedReplaceSpecToCode: integer;
     CharSizeProportional: boolean;
-    CharScaleFullWidth: word;
     RenderSpaceBgAtLineEOL: boolean;
     RenderSpaceBgAtLineEOL_WidthOnEmpty: integer;
     SpeedScrollAutoHorz: integer; //auto-scroll (drag out of control): speed x
@@ -416,7 +417,6 @@ initialization
     UnprintedReplaceSpec:= false;
     UnprintedReplaceSpecToCode:= 164;
     CharSizeProportional:= true;
-    CharScaleFullWidth:= 190;
     RenderSpaceBgAtLineEOL:= true;
     RenderSpaceBgAtLineEOL_WidthOnEmpty:= 50;
     SpeedScrollAutoHorz:= 10;
