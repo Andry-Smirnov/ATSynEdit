@@ -304,6 +304,17 @@ type
     );
 
 const
+  cEditorMouseActionStr: array[TATEditorMouseAction] of string = (
+    'None',
+    'ClickSimple',
+    'ClickRight',
+    'ClickAndSelNormalBlock',
+    'ClickAndSelVerticalBlock',
+    'ClickMiddle',
+    'MakeCaret',
+    'MakeCaretsColumn'
+    );
+
   cEditorFoldStylesUnfoldOnClick = [
     TATEditorFoldStyle.HereWithDots,
     TATEditorFoldStyle.HereWithTruncatedText,
@@ -357,7 +368,7 @@ type
     ScrolledHorz, //flag "horizontal scroll _position_ is changed"
     RepaintNeeded, //last paint changes some state, so repainting is needed
     ScrollEventNeeded, //last paint detected that OnScroll event must be fired
-    Resize
+    Resize //component was resized after last Paint call
     );
   TATEditorInternalFlags = set of TATEditorInternalFlag;
 
@@ -568,8 +579,8 @@ type
     cInitTabSize = 8;
     cInitNumbersStyle = TATEditorNumbersStyle.Each5th;
     cInitNumbersIndentPercents = 60;
-    cInitBitmapWidth = 1000;
-    cInitBitmapHeight = 800;
+    cInitBitmapWidth = 400;
+    cInitBitmapHeight = 30;
     cInitGutterPlusSize = 4;
     cInitGutterWidthBookmarks = 16;
     cInitGutterWidthNumbers = 10;
@@ -862,6 +873,7 @@ type
     FColorGutterFoldBG: TColor;
     FColorRulerBG: TColor;
     FColorCollapseMarkBG: TColor;
+    FColorCaretXor: TColor;
     FRulerHeight: integer;
     FNumbersIndent: integer;
     FRectMain,
@@ -1843,6 +1855,7 @@ type
     property PopupMicromap: TPopupMenu read FMenuMicromap write FMenuMicromap;
     property PopupRuler: TPopupMenu read FMenuRuler write FMenuRuler;
     //misc
+    procedure DoDeallocateHeavyBitmap;
     function GetVisibleLines: integer;
     function GetVisibleColumns: integer;
     function GetVisibleLinesMinimap: integer;
@@ -6338,6 +6351,11 @@ begin
   FColorRulerBG:= Colors.RulerBG;
   FColorCollapseMarkBG:= Colors.CollapseMarkBG;
 
+  FColorCaretXor:= Colors.Caret;
+  if FColorCaretXor=clNone then
+    FColorCaretXor:= Colors.TextFont;
+  FColorCaretXor:= FColorCaretXor xor Colors.TextBG;
+
   if Enabled then
   begin
     if FOptDimUnfocusedBack<>0 then
@@ -7063,6 +7081,11 @@ begin
   FMouseDownWithAlt:= ssAlt in Shift;
   FMouseDownWithShift:= ssShift in Shift;
   ActionId:= EditorMouseActionId(FMouseActions, Shift);
+
+  {$ifndef windows}
+  //if ActionId<>TATEditorMouseAction.None then
+  //  Writeln('Mouse: ', cEditorMouseActionStr[ActionId]);
+  {$endif}
 
   if FMinimapVisible and ATPointInRect(FRectMinimap, PosCoord) then
   begin
@@ -8548,18 +8571,21 @@ var
 begin
   if not FCaretBlinkEnabled and ACaretShape.IsNarrow then
   begin
-    C.Brush.Color:= (not (Colors.Caret xor Colors.TextBG)) and $ffffff;
+    if Colors.Caret<>clNone then
+      C.Brush.Color:= Colors.Caret
+    else
+      C.Brush.Color:= Colors.TextFont;
     C.FillRect(ARect);
     exit;
   end;
 
   if ACaretShape.EmptyInside then
   begin
-    CanvasInvertRectEmptyInside(C, ARect, Colors.Caret);
+    CanvasInvertRectEmptyInside(C, ARect, FColorCaretXor);
     exit;
   end;
 
-  CanvasInvertRect(C, ARect, Colors.Caret);
+  CanvasInvertRect(C, ARect, FColorCaretXor);
 
   if ATEditorOptions.CaretTextOverInvertedRect and not ACaretShape.IsNarrow then
   begin
@@ -8644,7 +8670,7 @@ begin
         RectCaretOld:= Caret.OldRect;
         if RectCaretOld.Width>0 then
         begin
-          CanvasInvertRect(C, RectCaretOld, Colors.Caret);
+          CanvasInvertRect(C, RectCaretOld, FColorCaretXor);
           if AWithInvalidate then
           begin
             {$ifdef darwin}
@@ -11856,6 +11882,16 @@ begin
     NIndent:= SGetIndentChars(S);
     if AIndent>NIndent then
       AIndent:= NIndent;
+  end;
+end;
+
+procedure TATSynEdit.DoDeallocateHeavyBitmap;
+begin
+  if Assigned(FBitmap) and (FBitmap.Width>1) then
+  begin
+    FBitmap.SetSize(1, 1);
+    Include(FPaintFlags, TATEditorInternalFlag.Bitmap);
+    Include(FPaintFlags, TATEditorInternalFlag.Resize);
   end;
 end;
 
