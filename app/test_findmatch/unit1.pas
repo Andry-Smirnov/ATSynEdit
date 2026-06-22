@@ -8,7 +8,6 @@ uses
   Classes, SysUtils, FileUtil, Forms, Controls, Graphics, Dialogs, StdCtrls,
   ATSynEdit_Finder,
   ATSynEdit_RegExpr,
-  ATSynEdit_Carets,
   ATSynEdit,
   Math;
 
