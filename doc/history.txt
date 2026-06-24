@@ -1,3 +1,6 @@
+2026.06.24
++ add: new define "AT_IME" in atsynedit_defines.inc, it is now global enable-flag for IME (Input Method Editor) additional code for all OS/widgetsets
+
 2025.04.21
 * change: removed prop OptSpacingY, added OptSpacingTop & OptSpacingBottom instead
 * change: prop Colors changed from 'class' to 'record'
