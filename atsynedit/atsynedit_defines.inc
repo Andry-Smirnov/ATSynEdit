@@ -8,3 +8,6 @@
 
 {$define map_th} //render minimap in thread
 
+{$define AT_IME} //enable IME (Input Method Editor) code,
+                 //for GTK2/GTK3/Qt5/Qt6/Cocoa/Windows
+

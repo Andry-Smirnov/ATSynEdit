@@ -16,14 +16,20 @@ interface
 uses
   {$ifdef Windows}
   Windows,
-  ATSynEdit_Adapter_IME_Windows,
+    {$ifdef AT_IME}
+    ATSynEdit_Adapter_IME_Windows,
+    {$endif}
   {$endif}
   {$ifdef LCLGTK2}
-  ATSynEdit_Adapter_ime_gtk2,
+    {$ifdef AT_IME}
+    ATSynEdit_Adapter_ime_gtk2,
+    {$endif}
   {$endif}
   {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
   qtwidgets,
-  ATSynEdit_Adapter_IME_QT,
+    {$ifdef AT_IME}
+    ATSynEdit_Adapter_IME_QT,
+    {$endif}
   {$endif}
   Messages, //for Win32 and macOS
   InterfaceBase,
@@ -1652,7 +1658,9 @@ type
     EventCaretSlow_Filter: string; //for CudaText
     EventCaretSlow_WithSel: boolean; //for CudaText
     {$ifdef WINDOWS}
+    {$ifdef AT_IME}
     IMELangID: Word;
+    {$endif}
     {$endif}
 
     //overrides
@@ -1936,6 +1944,7 @@ type
     procedure WMKillFocus(var Message: TLMKillFocus); message LM_KILLFOCUS;
 
     {$ifdef windows}
+    {$ifdef AT_IME}
     procedure WMIME_Request(var Msg: TMessage); message WM_IME_REQUEST;
     procedure WMIME_Notify(var Msg: TMessage); message WM_IME_NOTIFY;
     procedure WMIME_StartComposition(var Msg:TMessage); message WM_IME_STARTCOMPOSITION;
@@ -1943,21 +1952,25 @@ type
     procedure WMIME_EndComposition(var Msg:TMessage); message WM_IME_ENDCOMPOSITION;
     procedure WMINPUTLANGCHANGE(var Msg:TMessage); message WM_INPUTLANGCHANGE;
     {$endif}
+    {$endif}
 
     {$ifdef LCLGTK2}
-    //{$ifdef GTK2_IME_CODE}
+    {$ifdef AT_IME}
     procedure WM_GTK_IM_COMPOSITION(var Msg: TLMessage); message LM_IM_COMPOSITION;
-    //{$endif}
+    {$endif}
     {$endif}
 
     {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+    {$ifdef AT_IME}
     procedure WM_QT_IM_COMPOSITION(var Msg: TLMessage); message LM_IM_COMPOSITION;
-    procedure WM_QT_IM_QueryCaretPos(var Msg: TLMessage); message LM_IM_COMPOSITION+
-      1;
+    procedure WM_QT_IM_QueryCaretPos(var Msg: TLMessage); message LM_IM_COMPOSITION+1;
+    {$endif}
     {$endif}
 
     {$ifdef LCLCOCOA}
+    {$ifdef AT_IME}
     procedure COCOA_IM_COMPOSITION(var Message: TLMessage); message LM_IM_COMPOSITION;
+    {$endif}
     {$endif}
 
   published
@@ -2372,7 +2385,9 @@ uses
 
 {$ifdef LCLCOCOA}
 //unit was changed to an INC file because of problems with IDE under macOS
-{$I atsynedit_adapter_ime_cocoa.inc}
+  {$ifdef AT_IME}
+  {$I atsynedit_adapter_ime_cocoa.inc}
+  {$endif}
 {$endif}
 
 
@@ -5478,23 +5493,29 @@ begin
   FMinimapBmp:= TBGRABitmap.Create;
 
   {$ifdef windows}
-  FAdapterIME:= TATAdapterWindowsIME.Create;
-  IMELangID:=LoWord(DWORD_PTR(HKL(GetKeyboardLayout(0)))) and $03ff;
+    {$ifdef AT_IME}
+    FAdapterIME:= TATAdapterWindowsIME.Create;
+    IMELangID:= LoWord(DWORD_PTR(HKL(GetKeyboardLayout(0)))) and $03ff;
+    {$endif}
   {$endif}
 
   {$ifdef LCLCOCOA}
-  FAdapterIME:= TATAdapterCocoaIME.Create(self);
+    {$ifdef AT_IME}
+    FAdapterIME:= TATAdapterCocoaIME.Create(self);
+    {$endif}
   {$endif}
 
   {$ifdef LCLGTK2}
-  FAdapterIME:= TATAdapterGTK2IME.Create;
+    {$ifdef AT_IME}
+    FAdapterIME:= TATAdapterGTK2IME.Create;
+    {$endif}
   {$endif}
 
   {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
-  {
-  //Qt6 IME adapter has problem: https://github.com/Alexey-T/ATSynEdit/issues/349
-  FAdapterIME:= TATAdapterQTIME.Create;
-  }
+    {$ifdef AT_IME____}
+    //Qt6 IME adapter has problem: https://github.com/Alexey-T/ATSynEdit/issues/349
+    FAdapterIME:= TATAdapterQTIME.Create;
+    {$endif}
   {$endif}
 
   FPaintLocked:= 0;
@@ -6952,6 +6973,8 @@ begin
 end;
 
 {$ifdef windows}
+{$ifdef AT_IME}
+
 procedure TATSynEdit.WMIME_Request(var Msg: TMessage);
 begin
   if Assigned(FAdapterIME) then
@@ -6988,12 +7011,15 @@ begin
 end;
 
 {$endif}
+{$endif}
 
 {$ifdef LCLCOCOA}
+{$ifdef AT_IME}
 procedure TATSynEdit.COCOA_IM_COMPOSITION(var Message: TMessage);
 begin
   Message.Result := PtrInt(FAdapterIME);
 end;
+{$endif}
 {$endif}
 
 procedure TATSynEdit.WMHScroll(var Msg: TLMHScroll);
@@ -10142,6 +10168,8 @@ begin
 end;
 
 {$if defined(LCLQT5) or defined(LCLQt6) or defined(LCLQt)}
+{$ifdef AT_IME}
+
 procedure TATSynEdit.WM_QT_IM_COMPOSITION(var Msg: TLMessage);
 begin
   if Assigned(FAdapterIME) then
@@ -10155,15 +10183,16 @@ begin
 end;
 
 {$endif}
+{$endif}
 
 {$ifdef LCLGTK2}
-//{$ifdef GTK2_IME_CODE}
+{$ifdef AT_IME}
 procedure TATSynEdit.WM_GTK_IM_COMPOSITION(var Msg: TLMessage);
 begin
   if Assigned(FAdapterIME) then
     FAdapterIME.GTK2IMComposition(Self, Msg);
 end;
-//{$endif}
+{$endif}
 {$endif}
 
 procedure TATSynEdit.DoPaintStaple(C: TCanvas; const R: TRect; AColor: TColor);
