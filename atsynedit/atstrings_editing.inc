@@ -110,20 +110,27 @@ end;
 function TATStrings.TextReplaceLines_UTF8(ALineFrom, ALineTo: SizeInt;
   ANewLines: TStringList): boolean;
 var
-  bHadFakeLine: boolean;
+  bHadFakeLine, bDeleteWithLastLine: boolean;
 begin
   Result:= false;
   if not IsIndexValid(ALineFrom) then exit;
+  if ALineFrom>ALineTo then exit;
   Result:= true;
 
   BeginUndoGroup;
   try
     bHadFakeLine:= IsLastLineFake;
+    bDeleteWithLastLine:= ALineTo>=Count-1;
+
     LineBlockDelete(ALineFrom, Min(ALineTo, Count-1)); //too big ALineTo allowed
     LineBlockInsert(ALineFrom, ANewLines);
-    //fake line maybe appeared if we insert block until file end. delete fake line.
-    if not bHadFakeLine and (Count>1) and IsLastLineFake then
-      ActionDeleteFakeLineAndFinalEol;
+
+    if IsLastLineFake and
+         not ((Count=1) and (LinesLen[0]=0)) then //document becomes empty?
+      if bDeleteWithLastLine or
+         //fake line maybe appeared if we insert block until file end. delete fake line.
+         (not bHadFakeLine and (Count>1)) then
+       ActionDeleteFakeLineAndFinalEol;
   finally
     EndUndoGroup;
   end;

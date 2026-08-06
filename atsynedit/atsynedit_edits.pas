@@ -151,6 +151,11 @@ begin
   OptShowMouseSelFrame:= false;
   OptMouseWheelZooms:= false;
 
+  //CudaText user asked to not copy whole line (eg with empty input) by Ctrl+C
+  //in inputs without selection, like in Notepad++/Codium/browers
+  OptCopyLinesIfNoSel:= false;
+  OptCutLinesIfNoSel:= false;
+
   Height:= 26;
 
   IsRepaintEnabled:= true;
