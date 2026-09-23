@@ -70,8 +70,11 @@ type
     class Function ItemIsManaged : Boolean; virtual;
     function Add(Item: Pointer): Integer;
     procedure Clear;
+    procedure SetCountFast(NewCount: Integer); //2026.09.12: no zero-fill on growth, caller must fill new slots
+    function ItemPtrRaw(AIndex: integer): Pointer; {$ifdef FGLINLINE} inline; {$endif} //2026.09.12: no bounds check
     procedure Delete(Index: Integer);
     procedure DeleteRange(IndexFrom, IndexTo : Integer);
+    procedure InsertRange(AIndex, ACount: Integer);
     class procedure Error(const Msg: string; Data: PtrInt);
     procedure Exchange(Index1, Index2: Integer);
     function Expand: TFPSList;
@@ -501,7 +504,7 @@ begin
   CheckIndex(Index);
   p:=InternalItems[Index];
   if assigned(p) then
-    DeRef(p);	
+    DeRef(p);   
   InternalItems[Index] := Item;
 end;
 
@@ -545,6 +548,40 @@ begin
   else if NewCount < FCount then
     Deref(NewCount, FCount-1);
   FCount := NewCount;
+end;
+
+procedure TFPSList.SetCountFast(NewCount: Integer);
+//2026.09.12 (CudaText perf): SetCount variant without zero-filling the
+//newly added slots: the caller MUST fully overwrite slots [FCount..
+//NewCount-1] right after the call (e.g. TATWrapInfo.AddItems moves all new
+//items there; SetCount zero-filled them first, so every wrap item was
+//written twice: for a 1M-lines word-wrapped document that is ~170Mb of
+//useless memory writes per full WrapInfo recalculation).
+//Shrinking is allowed: managed element types still get Deref, like SetCount.
+begin
+  if (NewCount < 0) or (NewCount > MaxListSize) then
+    Error(SListCountError, NewCount);
+  if NewCount > FCapacity then
+    SetCapacity(NewCount);
+  //2026.09.12: zero-fill the new slots for MANAGED element types: filling
+  //them later via Items[] assignment would deref the garbage left in the
+  //slots; unmanaged types (records, the wrap-items) skip the fill, which
+  //is the point of this method (caller overwrites slots with raw Move)
+  if (NewCount > FCount) and ItemIsManaged then
+    FillByte(InternalItems[FCount]^, (NewCount-FCount) * FItemSize, 0)
+  else if NewCount < FCount then
+    //shrink always Derefs (virtual: frees objects of TFPGObjectList,
+    //releases managed types), exactly like SetCount
+    Deref(NewCount, FCount-1);
+  FCount := NewCount;
+end;
+
+function TFPSList.ItemPtrRaw(AIndex: integer): Pointer;
+//2026.09.12 (CudaText perf): raw item pointer without the bounds check of
+//Get()/_GetItemPtr(): used by TATWrapInfo bulk updates, which write slots
+//at/after Count (count grows right after the writes; single-threaded)
+begin
+  Result := InternalItems[AIndex];
 end;
 
 function TFPSList.Add(Item: Pointer): Integer;
@@ -627,6 +664,31 @@ begin
     on the list, and accidentally Deref it too soon.
     See http://bugs.freepascal.org/view.php?id=20005. }
   FillChar(InternalItems[FCount]^, (FCapacity+1-FCount) * FItemSize, #0);
+end;
+
+procedure TFPSList.InsertRange(AIndex, ACount: Integer);
+var
+  Ptr: Pointer;
+begin
+  if ACount<=0 then Exit;
+  if (AIndex<0) or (AIndex>FCount) then
+    RaiseIndexError(AIndex);
+
+  if FCount+ACount>FCapacity then
+    SetCapacity(FCount+ACount);
+
+  if AIndex<FCount then
+  begin
+    Ptr:= InternalItems[AIndex];
+    //move list tail to the right; region after Count is zeroed by SetCapacity,
+    //so it's safe to move to (Ptr+ACount*ItemSize)
+    System.Move(Ptr^, (Ptr+SizeInt(ACount)*FItemSize)^, SizeInt(FCount-AIndex)*FItemSize);
+    //zero opened slots: empty items, like Insert() does
+    System.FillChar(Ptr^, SizeInt(ACount)*FItemSize, 0);
+  end;
+  //note: for AIndex=Count (append) slots are already zeroed: list keeps
+  //'ending filled with zeros' invariant
+  Inc(FCount, ACount);
 end;
 
 procedure TFPSList.Extract(Item: Pointer; ResultPtr: Pointer);

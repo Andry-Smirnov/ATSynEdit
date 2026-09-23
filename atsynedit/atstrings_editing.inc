@@ -110,21 +110,96 @@ end;
 function TATStrings.TextReplaceLines_UTF8(ALineFrom, ALineTo: SizeInt;
   ANewLines: TStringList): boolean;
 var
-  bHadFakeLine, bDeleteWithLastLine: boolean;
+  EndsArray: array of TATLineEnds;
+  S: string;
+  charLast, charPrev: char;
+  bHadFakeLine, bDeleteWithLastLine, bKeepFinalEol: boolean;
+  NLastInserted, i: integer;
 begin
   Result:= false;
   if not IsIndexValid(ALineFrom) then exit;
   if ALineFrom>ALineTo then exit;
   Result:= true;
 
+  //parse line-endings; TATLineEnds.None marks "no explicit EOL in the item"
+  EndsArray:= nil;
+  SetLength(EndsArray, ANewLines.Count);
+  for i:= 0 to ANewLines.Count-1 do
+  begin
+    S:= ANewLines[i];
+    if S='' then
+      EndsArray[i]:= TATLineEnds.None
+    else
+    begin
+      charLast:= S[Length(S)];
+      if Length(S)>1 then
+        charPrev:= S[Length(S)-1]
+      else
+        charPrev:= #0;
+      if (charLast=#10) and (charPrev=#13) then
+      begin
+        EndsArray[i]:= TATLineEnds.Windows;
+        SetLength(S, Length(S)-2);
+        ANewLines[i]:= S;
+      end
+      else if charLast=#10 then
+      begin
+        EndsArray[i]:= TATLineEnds.Unix;
+        SetLength(S, Length(S)-1);
+        ANewLines[i]:= S;
+      end
+      else if charLast=#13 then
+      begin
+        EndsArray[i]:= TATLineEnds.Mac;
+        SetLength(S, Length(S)-1);
+        ANewLines[i]:= S;
+      end
+      else
+        EndsArray[i]:= TATLineEnds.None;
+
+      //don't allow CR LF chars, except at the line ends
+      if SStringHasEol(S) then exit(false);
+    end;
+  end;
+
   BeginUndoGroup;
   try
     bHadFakeLine:= IsLastLineFake;
     bDeleteWithLastLine:= ALineTo>=Count-1;
+    //we replace to the end of doc, and last item has explicit EOL:
+    //document must get final EOL, like after loading of file; CudaText #6432
+    bKeepFinalEol:= bDeleteWithLastLine and
+      (Length(EndsArray)>0) and
+      (EndsArray[High(EndsArray)]<>TATLineEnds.None);
 
     LineBlockDelete(ALineFrom, Min(ALineTo, Count-1)); //too big ALineTo allowed
-    LineBlockInsert(ALineFrom, ANewLines);
+    //2026.09.12 (CudaText perf): per-line line-endings are applied at the
+    //insert (lines are created with their FINAL endings), so the LinesEnds[]
+    //fixup loop below becomes a no-op for the fast path - it made a ChangeEol
+    //undo-item per line when the parsed endings differed from Endings
+    //(CudaText ed.replace_lines on Windows: new file has CRLF, Python lines
+    //end with LF -> 1M redundant ChangeEol items, ~1.3s per 1M lines).
+    //The slow per-line path (readonly/one-line/single line) still needs it.
+    LineBlockInsertEnds(ALineFrom, ANewLines, EndsArray);
 
+    //set line-endings of inserted lines, except doc's last line;
+    //items w/o explicit EOL give default Endings
+    NLastInserted:= ALineFrom+Length(EndsArray)-1;
+    for i:= ALineFrom to Min(NLastInserted, Count-2) do
+      if EndsArray[i-ALineFrom]<>TATLineEnds.None then
+        LinesEnds[i]:= EndsArray[i-ALineFrom]
+      else
+        LinesEnds[i]:= Endings;
+
+    if bKeepFinalEol then
+    begin
+      //last item had EOL: keep it as final EOL of document;
+      //normalized state is "last line with EOL" + fake line, like on file loading
+      if (NLastInserted>=0) and (NLastInserted<=Count-1) then
+        LinesEnds[NLastInserted]:= EndsArray[High(EndsArray)];
+      ActionAddFakeLineIfNeeded;
+    end
+    else
     if IsLastLineFake and
          not ((Count=1) and (LinesLen[0]=0)) then //document becomes empty?
       if bDeleteWithLastLine or
@@ -242,6 +317,20 @@ begin
 
   //----------------------
   //Insert multi-line text
+
+  {
+  2026.09: multi-line TextInsert (paste) is not handled by the incremental
+  WrapInfo update (WrapStruct tracking is marked "complex", so next
+  UpdateWrapInfo() fully recalculates): TextInsert combines several line
+  mutations, and its coalesced event (Added, AY, AShift.Y) is fired after the
+  mutations, while WrapStructRecord() must know structural ops before the
+  physical line moves, to shift edited-line indexes correctly. Paste worked
+  with full WrapInfo recalculation before 2026.09 too (any Insert action
+  disabled the cached update), so this is not a regression.
+  Block-insertions of replace_lines (LineBlockInsert) and undo/redo runs are
+  handled incrementally.
+  }
+  WrapStructInvalidate;
 
   Block:= TATStrings.Create(0); //set UndoLimit=0 to avoid undo in Block
   try
@@ -551,10 +640,17 @@ end;
 procedure TATStrings.LineBlockDelete(ALine1, ALine2: SizeInt; AForceLast: boolean = true);
 var
   NCount, i: SizeInt;
+  bFast: boolean;
+  Item: PATStringItem;
+  CurCarets, CurCarets2: TATPointPairArray;
+  CurMarkers, CurMarkers2: TATMarkerMarkerArray;
+  CurAttribs: TATMarkerAttribArray;
   //CurUndoList: TATUndoList;
   //NNeedUndoCapacity: integer;
 begin
+  if FReadOnly or FOneLine then exit;
   if ALine1>ALine2 then Exit;
+
   NCount:= Count;
   if ALine1>=NCount then ALine1:= NCount-1;
   if ALine2>=NCount then ALine2:= NCount-1;
@@ -584,13 +680,92 @@ begin
     TATBlockChangeKind.DeleteLines,
     nil);
 
-  //delete slowly with undo; yes, we do it for any count of deleted lines
-  for i:= ALine2 downto ALine1 do
-    LineDelete(i,
-      false{AForceLast},
-      false{WithEvent},
-      true{AWithUndo}
-      );
+  {
+  2026.09: optimized delete of big block (issue #368).
+  Old code called LineDelete() per line: each one called FList.Delete(i),
+  which moved all lines below the block down - O(N_block * N_below)
+  list-moves (slow when the deleted block ends far above the last line,
+  e.g. deleting the first half of a 300K-lines file).
+  New code creates the SAME undo-items, which old code made (action Delete,
+  one per line, pushed in same order ALine2..ALine1, each with its own
+  original index, text/ends/state), reading them from the intact list,
+  then removes all lines with a single FList.DeleteRange() - one memory-move
+  of the lines below the block.
+  Carets/markers/attribs are captured once for the whole block, and passed to
+  AddUndoItemEx() per line: old code captured the same values per line (loop
+  fires no events, so editor state doesn't change in it), but each capture was
+  3 event-callbacks into the editor (OnGetCaretsArray allocates an array in
+  TATSynEdit.GetCaretsArray), which dominated the delete time of big blocks.
+  Undo/redo results are identical: per-item undo of these items
+  (LineInsertRaw at each item's index) is unchanged, and such runs of
+  consecutive-index items are optimized too (see UndoCountRun/UndoRun*
+  comments in atstrings.pas).
+  2026.09 (issue #385): only the 1st saved undo-item of the block (loop's
+  first iteration, i=ALine2) stores the captured arrays; all other items are
+  added with AArraysDisabled=True, so undo/redo of them doesn't touch the
+  current carets/markers/attribs. All items of one block-delete captured the
+  same values (the loop is eventless), so applying them once - on undo of
+  the 1st item - gives the same final editor state as before. RAM usage drops
+  from O(N_items*M_markers) to O(M_markers).
+  }
+  bFast:= (ALine2-ALine1>0) and (ALine1>=0) and (not FReadOnly);
+
+  if bFast then
+  begin
+    //capture once for all undo-items of the block (same values as per-line capture)
+    if FEnabledCaretsInUndo then
+    begin
+      CurCarets:= GetCaretsArray;
+      CurCarets2:= GetCaretsArray2;
+    end
+    else
+    begin
+      CurCarets:= nil;
+      CurCarets2:= nil;
+    end;
+    CurMarkers:= GetMarkersArray;
+    CurMarkers2:= GetMarkersArray2;
+    CurAttribs:= GetAttribsArray;
+
+    for i:= ALine2 downto ALine1 do
+    begin
+      Item:= FList.GetItem(i);
+      UpdateModified;
+      //2026.09 (issue #385): 1st saved undo-item stores the real arrays,
+      //all other items of the block get AArraysDisabled=True
+      if i=ALine2 then
+        AddUndoItemEx(TATEditAction.Delete, i,
+          Item^.Line, Item^.LineEnds, Item^.LineState, FCommandCode,
+          CurCarets, CurCarets2, CurMarkers, CurMarkers2, CurAttribs)
+      else
+        AddUndoItemEx(TATEditAction.Delete, i,
+          Item^.Line, Item^.LineEnds, Item^.LineState, FCommandCode,
+          nil, nil, nil, nil, nil,
+          true{AArraysDisabled, issue #385});
+    end;
+
+    //2026.09: fire event before the physical deletion, like LineDelete() does;
+    //WrapStructRecord() needs the deleted lines to be still present
+    //(it hashes their texts, to reuse wrap-items on undo)
+    DoEventLog(ALine1);
+    DoEventChange(TATLineChangeKind.Deleted, ALine1, ALine2-ALine1+1);
+
+    FList.DeleteRange(ALine1, ALine2)
+  end
+  else
+  begin
+    //2026.09: event before deletion, same reason as above
+    DoEventLog(ALine1);
+    DoEventChange(TATLineChangeKind.Deleted, ALine1, ALine2-ALine1+1);
+
+    //delete slowly with undo; yes, we do it for any count of deleted lines
+    for i:= ALine2 downto ALine1 do
+      LineDelete(i,
+        false{AForceLast},
+        false{WithEvent},
+        true{AWithUndo}
+        );
+  end;
 
   (*
   if (ALine2-ALine1)<FUndoList.MaxCount then
@@ -611,17 +786,46 @@ begin
   if AForceLast then
     ActionAddFakeLineIfNeeded;
 
-  DoEventChange(TATLineChangeKind.Deleted, ALine1, ALine2-ALine1+1);
-  DoEventLog(ALine1);
   Modified:= true;
 
   FChangeBlockActive:= false;
 end;
 
 procedure TATStrings.LineBlockInsert(ALineFrom: SizeInt; ANewLines: TStringList);
-var
-  i: SizeInt;
 begin
+  //2026.09.12 (CudaText perf): old behavior kept as a thin wrapper - all
+  //inserted lines get Endings (no per-line endings passed)
+  LineBlockInsertEnds(ALineFrom, ANewLines, []);
+end;
+
+procedure TATStrings.LineBlockInsertEnds(ALineFrom: SizeInt; ANewLines: TStringList;
+  const AEnds: array of TATLineEnds);
+{
+2026.09.12 (CudaText perf): LineBlockInsert with per-line line-endings
+(AEnds[k], TATLineEnds.None = document's Endings, like TextReplaceLines_
+UTF8's EOL fixup loop maps). Lines are created with their FINAL endings, so
+the caller's LinesEnds[] fixup becomes a no-op: TextReplaceLines_UTF8 made
+a ChangeEol undo-item per line whenever the parsed endings differed from
+Endings (CudaText ed.replace_lines on Windows: new file has CRLF endings,
+Python lines end with LF -> 1M ChangeEol items, ~1.3s). Those items were
+redundant: undoing the block deletes the lines wholesale, and mirror-items
+capture the final text+endings at undo time, so redo is identical too.
+
+Also creates the Insert placeholder undo-items with ONE bulk
+TATUndoList.AddInsertRun() call instead of AddUndoItemEx() per line (same
+items, ~0.3s less per 1M lines).
+}
+var
+  bFast: boolean;
+  i, NDone, NUndoSaved: SizeInt;
+  CurEnd: TATLineEnds;
+  CurCarets, CurCarets2: TATPointPairArray;
+  CurMarkers, CurMarkers2: TATMarkerMarkerArray;
+  CurAttribs: TATMarkerAttribArray;
+  CurUndoList: TATUndoList;
+begin
+  if FReadOnly or FOneLine then exit;
+
   FChangeBlockActive:= true;
   DoOnChangeBlock(
     0, ALineFrom,
@@ -629,12 +833,125 @@ begin
     TATBlockChangeKind.InsertLines,
     ANewLines);
 
-  for i:= ANewLines.Count-1 downto 0 do
-    LineInsert(ALineFrom, UTF8Decode(ANewLines[i]), false{AWithEvent});
-  FChangeBlockActive:= false;
+  {
+  2026.09: optimized insert of big block.
+  Old code inserted lines in reverse order, at same index, so every line
+  called FList.Insert() which shifts the list tail - it's O(N^2) list-moves
+  for N lines (e.g. ~1 hour for 1M lines, CudaText perf issue with
+  ed.replace_lines). New code opens all list-slots with a single
+  memory-move (TATStringItemList.InsertRange) and fills slots in forward
+  order - O(N) list-moves. Undo-items are the same as before
+  (TATEditAction.Insert, one per line): both old/new order give identical
+  document and identical undo/redo results.
+  Edge cases (readonly/one-line/index at end) use old per-line code.
+  }
+  bFast:= (ANewLines.Count>1) and
+    IsIndexValid(ALineFrom);
 
+  //2026.09: fire event before the physical insertion, like LineInsert() does:
+  //WrapStructRecord() must shift edited-line indexes before lines are moved
+  //(SetLine calls, which caller TextReplaceLines_UTF8 makes after this, must
+  //record edited-line indexes already in the new coordinates)
   DoEventLog(ALineFrom);
   DoEventChange(TATLineChangeKind.Added, ALineFrom, ANewLines.Count);
+
+  if bFast then
+  begin
+    FList.InsertRange(ALineFrom, ANewLines.Count);
+
+    {
+    2026.09 (CudaText perf): capture carets/markers/attribs once for all
+    undo-items of the block (loop fires no events, so the same values are
+    captured per line) - like LineBlockDelete() does. Per-line capture made
+    5 editor callbacks per line (OnGetCaretsArray allocates an array),
+    ~0.9s of 1M-lines replace_lines in callgrind.
+    2026.09.12: all Insert placeholder undo-items are created with ONE
+    TATUndoList.AddInsertRun() call (same items as per-line AddUndoItemEx
+    made: one TATEditAction.Insert item per line, same index, empty text).
+    The per-line AddUndoItemEx also did (per line): FRedoList.Clear (no-op
+    after the first call), AddUpdatesAction (same flag write every call) -
+    both are done once here, with the same resulting state.
+    }
+    if FEnabledCaretsInUndo then
+    begin
+      CurCarets:= GetCaretsArray;
+      CurCarets2:= GetCaretsArray2;
+    end
+    else
+    begin
+      CurCarets:= nil;
+      CurCarets2:= nil;
+    end;
+    CurMarkers:= GetMarkersArray;
+    CurMarkers2:= GetMarkersArray2;
+    CurAttribs:= GetAttribsArray;
+
+    if not FUndoList.Locked then
+      CurUndoList:= FUndoList
+    else
+    if not FRedoList.Locked then
+      CurUndoList:= FRedoList
+    else
+      CurUndoList:= nil;
+
+    NUndoSaved:= 0;
+    if CurUndoList<>nil then
+    begin
+      //same per-line AddUndoItemEx() did, once:
+      if not FUndoList.Locked and not FRedoList.Locked then
+        FRedoList.Clear;
+      AddUpdatesAction(ALineFrom, TATEditAction.Insert);
+
+      //bulk undo-items (skipped when the per-item AddUndoItemEx would skip:
+      //nil lists / zero undo limit are handled by the FUndoLimit check;
+      //AddInsertRun checks Locked and MaxCount itself)
+      if (FUndoList<>nil) and (FRedoList<>nil) and (FUndoLimit<>0) then
+      begin
+        NUndoSaved:= CurUndoList.Count;
+        CurUndoList.AddInsertRun(ALineFrom, ANewLines.Count, FCommandCode,
+          CurCarets, CurCarets2, CurMarkers, CurMarkers2, CurAttribs);
+      end;
+    end;
+
+    NDone:= 0;
+    try
+      for i:= 0 to ANewLines.Count-1 do
+      begin
+        if i<=High(AEnds) then
+        begin
+          CurEnd:= AEnds[i];
+          if CurEnd=TATLineEnds.None then
+            CurEnd:= FEndings;
+        end
+        else
+          CurEnd:= FEndings;
+        //undo-item index is ALineFrom for all lines (like old code made),
+        //list-slot index grows
+        LineFillSlotUtf8(ALineFrom+i, ANewLines[i], CurEnd);
+        Inc(NDone);
+      end;
+    except
+      //keep list consistent on exception: slots, which were not filled,
+      //must be removed; already filled lines (and their undo-items) remain,
+      //like old per-line code would leave on exception. The bulk-created
+      //undo-items are trimmed to what per-line code would have made:
+      //(NDone+1) items (the item of the failing line was created before its
+      //Init in the per-line code)
+      if NDone<ANewLines.Count then
+      begin
+        FList.DeleteRange(ALineFrom+NDone, ALineFrom+ANewLines.Count-1);
+        if NUndoSaved>0 then
+          while CurUndoList.Count>NUndoSaved+NDone+1 do
+            CurUndoList.DeleteLast;
+      end;
+      raise;
+    end;
+  end
+  else
+    for i:= ANewLines.Count-1 downto 0 do
+      LineInsert(ALineFrom, UTF8Decode(ANewLines[i]), false{AWithEvent});
+
+  FChangeBlockActive:= false;
 end;
 
 

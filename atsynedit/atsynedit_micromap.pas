@@ -67,7 +67,10 @@ end;
 
 function TATMicromap.ColumnAdd(ATag: integer; AWidthUnits: integer; AColor: TColor): boolean;
 begin
-  Result:= (ColumnFromTag(ATag)<0) and (AWidthUnits>0);
+  Result:=
+    (ATag>=-128) and (ATag<=127) and //tag is stored in int8 type
+    (ColumnFromTag(ATag)<0) and
+    (AWidthUnits>0) and (AWidthUnits<=1000);
   if Result then
   begin
     SetLength(Columns, Length(Columns)+1);
@@ -88,17 +91,9 @@ var
 begin
   NCol:= ColumnFromTag(ATag);
   NLen:= Length(Columns);
-  Result:= (NCol>0) and (NCol<NLen); //don't allow to delete column-0
+  Result:= (NCol>=0) and (NCol<NLen);
   if Result then
     Delete(Columns, NCol, 1); //needs FPC 3.2.0
-  {
-  if Result then
-  begin
-    for i:= NCol to NLen-2 do
-      Columns[i]:= Columns[i+1];
-    SetLength(Columns, NLen-1);
-  end;
-  }
 end;
 
 procedure TATMicromap.UpdateWidth(ATotalWidthPixels: integer);

@@ -33,6 +33,7 @@ type
     bOpt: TButton;
     btnStop: TButton;
     bClearLog: TButton;
+    chkMicromapLeft: TCheckBox;
     chkMouseColSelect: TCheckBox;
     chkSmoothScroll: TCheckBox;
     chkMinimapTooltip: TCheckBox;
@@ -135,6 +136,7 @@ type
     procedure bGotoClick(Sender: TObject);
     procedure btnMarkerClick(Sender: TObject);
     procedure btnStopClick(Sender: TObject);
+    procedure chkMicromapLeftChange(Sender: TObject);
     procedure chkMinimapLeftChange(Sender: TObject);
     procedure chkMinimapTooltipChange(Sender: TObject);
     procedure chkMouseColSelectChange(Sender: TObject);
@@ -267,7 +269,8 @@ implementation
 uses
   Types, Math,
   LCLType, LCLProc,
-  atsynedit_commands;
+  ATSynEdit_CanvasProc_FillRect,
+  ATSynEdit_Commands;
 
 {$R *.lfm}
 
@@ -277,9 +280,7 @@ const
 
 procedure DoPaintGap(C: TCanvas; R: TRect; ALine: integer);
 begin
-  C.Brush.Color:= clMoneyGreen;
-  C.Pen.Color:= C.Brush.Color;
-  C.FillRect(R);
+  CanvasFillRect(C, R, clMoneyGreen);
   C.Font.Size:= 9;
   C.Font.Color:= clGray;
   C.TextOut(R.Left+20, R.Top+1, 'gap for line '+IntToStr(ALine));
@@ -517,6 +518,7 @@ begin
   chkMinimap.Checked:= ed.OptMinimapVisible;
   chkMinimapLeft.Checked:= ed.OptMinimapAtLeft;
   chkMicromap.Checked:= ed.OptMicromapVisible;
+  chkMicromapLeft.Checked:= ed.OptMicromapAtLeft;
   chkTabSpaces.Checked:= ed.OptTabSpaces;
   chkNewScroll.Checked:= ed.OptScrollbarsNew;
   edFontsize.Value:= ed.Font.Size;
@@ -594,12 +596,10 @@ var
 begin
   for i:= 0 to High(ed.Micromap.Columns) do
   begin
-    C.Brush.Style:= bsSolid;
-    C.Brush.Color:= ed.Micromap.Columns[i].NColor;
     R:= ARect;
     R.Left:= ARect.Left+ed.Micromap.Columns[i].NLeft;
     R.Right:= ARect.Left+ed.Micromap.Columns[i].NRight;
-    C.FillRect(R);
+    CanvasFillRect(C, R, ed.Micromap.Columns[i].NColor);
   end;
 end;
 
@@ -703,7 +703,7 @@ begin
   begin
     Caret:= ed.Carets[0];
     ed.Markers.Add(
-      Point(Caret.PosX, Caret.PosY),
+      Caret.AsPoint,
       Point(0, 0),
       TATMarkerTags.Init(0, 0)
       );
@@ -1345,6 +1345,13 @@ procedure TfmMain.chkMicromapChange(Sender: TObject);
 begin
   if wait then Exit;
   ed.OptMicromapVisible:= chkMicromap.Checked;
+  ed.Update;
+end;
+
+procedure TfmMain.chkMicromapLeftChange(Sender: TObject);
+begin
+  if wait then Exit;
+  ed.OptMicromapAtLeft:= chkMicromapLeft.Checked;
   ed.Update;
 end;
 

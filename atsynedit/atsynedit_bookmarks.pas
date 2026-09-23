@@ -72,6 +72,7 @@ type
     function IsIndexValid(N: integer): boolean;
     property ItemPtr[N: integer]: PATBookmarkItem read GetItemPtr; default;
     procedure Add(const AData: TATBookmarkData; AToggle: boolean=false);
+    procedure Append(const AData: TATBookmarkData);
     function Find(ALineNum: integer): integer;
     function FindNearest(ALineNum: integer; out AExactMatch: boolean): integer;
     function FindHintForLine(ALineNum: integer): string;
@@ -118,7 +119,10 @@ begin
   Data.ShowInBookmarkList:= AData.ShowInBookmarkList;
   if Data.Hint<>nil then
     StrDispose(Data.Hint);
-  Data.Hint:= StrNew(AData.Hint);
+  if AData.Hint<>nil then
+    Data.Hint:= StrNew(AData.Hint)
+  else
+    Data.Hint:= nil;
 end;
 
 { TATBookmarks }
@@ -191,6 +195,24 @@ begin
   Result:= (N>=0) and (N<FList.Count);
 end;
 
+procedure TATBookmarks.Append(const AData: TATBookmarkData);
+{
+Action doesn't do these:
+- Search for already existing bookmark for the same line index
+- Sorting of internal bookmarks list
+- Firing of event about bookmarks change
+- Rapainting of editor
+}
+var
+  Item: TATBookmarkItem;
+begin
+  Item:= Default(TATBookmarkItem);
+  Item.Assign(AData);
+  FList.Add(Item);
+
+  Modified:= true;
+end;
+
 procedure TATBookmarks.Add(const AData: TATBookmarkData; AToggle: boolean=false);
 var
   Item: TATBookmarkItem;
@@ -227,6 +249,8 @@ begin
       FList.Insert(N, Item);
     end;
   end;
+
+  Modified:= true;
 end;
 
 procedure TATBookmarks.DeleteDups;

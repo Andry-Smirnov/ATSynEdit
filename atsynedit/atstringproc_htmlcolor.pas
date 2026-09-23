@@ -17,10 +17,11 @@ type
   generic TATHtmlColorParser<TStr, TPChar> = class
   private
     class function IsCodeDigit(ch: word): boolean; inline;
-    class function IsCodeHexDigit(ch: word): boolean;
+    class function IsCodeHexDigit(ch: word): boolean; inline;
     class function IsCodeWord(ch: word): boolean;
     class function IsCodeSpace(ch: word): boolean; inline;
-    class function HexCodeToInt(ch: word): integer;
+    class function HexCodeToInt(ch: word): integer; inline;
+    class function ParseAngleUnit(const S: TStr; var N: SizeInt; var ValAngle: double): boolean;
     class procedure SkipSpaces(const S: TStr; var N: SizeInt); inline;
     class procedure SkipComma(const S: TStr; var N: SizeInt); inline;
     class procedure SkipCommaOrSlash(const S: TStr; var N: SizeInt); inline;
@@ -28,7 +29,7 @@ type
     class function SkipIntMaybeInPercents(const S: TStr; var N: SizeInt): integer;
     class function SkipIntWithPercent(const S: TStr; var N: SizeInt): integer;
     class function SkipFloat(const S: TStr; var N: SizeInt;
-      CalcValue, SkipPercent: boolean; out Ok: boolean): double;
+      ACalcValue, ASkipPercent: boolean; out AOk: boolean): double;
   public
     //convert TColor -> HTML color string #rrggbb
     class function ColorToHtmlString(Color: TColor): string;
@@ -56,14 +57,7 @@ end;
 
 class function TATHtmlColorParser.IsCodeHexDigit(ch: word): boolean;
 begin
-  case ch of
-    ord('0')..ord('9'),
-    ord('a')..ord('f'),
-    ord('A')..ord('F'):
-      Result:= true
-    else
-      Result:= false;
-  end;
+  Result:= HexCodeToInt(ch) <> $FF;
 end;
 
 class function TATHtmlColorParser.IsCodeWord(ch: word): boolean;
@@ -85,45 +79,58 @@ begin
 end;
 
 class function TATHtmlColorParser.HexCodeToInt(ch: word): integer;
+const
+  // Lookup table for hex digits.
+  // For '0'..'9','a'..'f','A'..'F' stores value 0..15,
+  // for other characters - $FF (mark "not a hex digit").
+  cHexVal: array[0..255] of byte = (
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 00-0F
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 10-1F
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 20-2F
+    $00,$01,$02,$03,$04,$05,$06,$07,$08,$09,$FF,$FF,$FF,$FF,$FF,$FF, // 30-3F  '0'..'9'
+    $FF,$0A,$0B,$0C,$0D,$0E,$0F,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 40-4F  'A'..'F'
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 50-5F
+    $FF,$0A,$0B,$0C,$0D,$0E,$0F,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 60-6F  'a'..'f'
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 70-7F
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 80-8F
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // 90-9F
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // A0-AF
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // B0-BF
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // C0-CF
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // D0-DF
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF, // E0-EF
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  // F0-FF
+  );
 begin
-  case ch of
-    ord('0')..ord('9'):
-      Result:= Ord(ch)-Ord('0');
-    ord('a')..ord('f'):
-      Result:= Ord(ch)-Ord('a')+10;
-    ord('A')..ord('F'):
-      Result:= Ord(ch)-Ord('A')+10;
-    else
-      Result:= 0;
-  end;
+  if ch <= $FF then
+    Result:= cHexVal[ch]
+  else
+    Result:= $FF;
 end;
 
 class function TATHtmlColorParser.ColorToHtmlString(Color: TColor): string;
 const
-  SHexDigits: PChar = '0123456789ABCDEF';
+  SHexDigits: array[0..15] of Char = '0123456789ABCDEF';
 var
   N: Longint;
-  r, g, b: byte;
 begin
-  if Color=clNone then
-    exit('');
+  if Color=clNone then Exit('');
   N:= ColorToRGB(Color);
-  r:= Red(N);
-  g:= Green(N);
-  b:= Blue(N);
-  SetLength(Result, 7); // #rrggbb
+  SetLength(Result, 7);
   Result[1]:= '#';
-  Result[2]:= SHexDigits[Hi(r)];
-  Result[3]:= SHexDigits[Lo(r)];
-  Result[4]:= SHexDigits[Hi(g)];
-  Result[5]:= SHexDigits[Lo(g)];
-  Result[6]:= SHexDigits[Hi(b)];
-  Result[7]:= SHexDigits[Lo(b)];
+  Result[2]:= SHexDigits[(N shr 4)  and $F];  // Red hi
+  Result[3]:= SHexDigits[ N         and $F];  // Red lo
+  Result[4]:= SHexDigits[(N shr 12) and $F];  // Green hi
+  Result[5]:= SHexDigits[(N shr 8)  and $F];  // Green lo
+  Result[6]:= SHexDigits[(N shr 20) and $F];  // Blue hi
+  Result[7]:= SHexDigits[(N shr 16) and $F];  // Blue lo
 end;
+
 
 class function TATHtmlColorParser.ParseTokenRGB(S: TPChar; out LenOfColor: integer;
   DefaultColor: TColor): TColor;
 var
+  P: TPChar;
   N1, N2, N3: integer;
   ch: word;
 begin
@@ -135,17 +142,20 @@ begin
     Inc(S);
 
   //must handle string longer than needed, with additional chars
-  repeat
-    ch:= ord(S[LenOfColor]);
+  P:= S;
+  while True do
+  begin
+    ch:= Word(P^);
     if ch=0 then Break;
     if not IsCodeHexDigit(ch) then
       if IsCodeWord(ch) then
         Exit
       else
         Break;
+    if LenOfColor=8 then Exit;
+    Inc(P);
     Inc(LenOfColor);
-    if LenOfColor>8 then Exit;
-  until false;
+  end;
 
   //allow #rgb, #rgba, #rrggbb, #rrggbbaa (ignore alpha value)
   case LenOfColor of
@@ -196,12 +206,12 @@ end;
 
 class function TATHtmlColorParser.SkipInt(const S: TStr; var N: SizeInt): integer;
 begin
-  Result:= -1;
   SkipSpaces(S, N);
+  if (N>Length(S)) or not IsCodeDigit(ord(S[N])) then
+    Exit(-1);
+  Result:= 0;
   while (N<=Length(S)) and IsCodeDigit(ord(S[N])) do
   begin
-    if Result=-1 then
-      Result:= 0;
     Result:= Result*10 + ord(S[N]) - ord('0');
     Inc(N);
   end;
@@ -233,41 +243,61 @@ end;
 
 
 class function TATHtmlColorParser.SkipFloat(const S: TStr; var N: SizeInt;
-  CalcValue, SkipPercent: boolean; out Ok: boolean): double;
+  ACalcValue, ASkipPercent: boolean; out AOk: boolean): double;
 var
-  Buf: string;
   NEnd: SizeInt;
+  Pow: double;
+  bNeg, bHasDigit: boolean;
 begin
-  Ok:= false;
+  AOk:= false;
   Result:= 0.0;
   SkipSpaces(S, N);
   NEnd:= N;
+  bNeg:= false;
 
+  if NEnd>Length(S) then Exit;
   if S[NEnd]='-' then
-    Inc(NEnd);
-  while (NEnd<=Length(S)) and (IsCodeDigit(ord(S[NEnd])) or (S[NEnd]='.')) do
-    Inc(NEnd);
-
-  if CalcValue then
   begin
-    Buf:= Copy(S, N, NEnd-N);
-    if Buf='' then exit;
-    if Buf[1]='.' then
-      Insert('0', Buf, 1);
-    Ok:= TryStrToFloat(Buf, Result);
-  end
-  else
-    Ok:= true;
+    bNeg:= true;
+    Inc(NEnd);
+  end;
 
+  bHasDigit:= false;
+  while (NEnd<=Length(S)) and IsCodeDigit(ord(S[NEnd])) do
+  begin
+    if ACalcValue then
+      Result:= Result*10.0 + (ord(S[NEnd]) - ord('0'));
+    bHasDigit:= true;
+    Inc(NEnd);
+  end;
+
+  if (NEnd<=Length(S)) and (S[NEnd]='.') then
+  begin
+    Inc(NEnd);
+    Pow:= 0.1;
+    while (NEnd<=Length(S)) and IsCodeDigit(ord(S[NEnd])) do
+    begin
+      if ACalcValue then
+        Result:= Result + (ord(S[NEnd]) - ord('0')) * Pow;
+      Pow:= Pow * 0.1;
+      bHasDigit:= true;
+      Inc(NEnd);
+    end;
+  end;
+
+  if not bHasDigit then Exit;
+
+  if ACalcValue and bNeg then
+    Result:= -Result;
+
+  AOk:= true;
   N:= NEnd;
   SkipSpaces(S, N);
-
-  if SkipPercent then
-    if S[N]='%' then
-    begin
-      Inc(N);
-      SkipSpaces(S, N);
-    end;
+  if ASkipPercent and (N<=Length(S)) and (S[N]='%') then
+  begin
+    Inc(N);
+    SkipSpaces(S, N);
+  end;
 end;
 
 
@@ -284,7 +314,6 @@ begin
 
   NLen:= Length(S);
   N:= FromPos;
-  bAlpha:= false;
 
   if N+9>NLen then exit;
   if S[N]<>'r' then exit;
@@ -294,10 +323,7 @@ begin
   if S[N]<>'b' then exit;
   Inc(N);
   if S[N]='a' then
-  begin
-    bAlpha:= true;
     Inc(N);
-  end;
   if S[N]<>'(' then exit;
   Inc(N);
 
@@ -324,8 +350,9 @@ begin
   if bAlpha then
   begin
     SkipCommaOrSlash(S, N);
-    ValAlpha:= SkipFloat(S, N, false, true, bOk);
-    if ValAlpha<0 then exit;
+    ValAlpha:= SkipFloat(S, N, false{CalcValue}, true, bOk);
+    //if ValAlpha<0 then exit; //CalcValue=False so ValAlpha is always 0.0
+    if not bOk then exit;
   end;
 
   if S[N]<>')' then exit;
@@ -334,6 +361,43 @@ begin
   LenOfColor:= N-FromPos+1;
 end;
 
+class function TATHtmlColorParser.ParseAngleUnit(const S: TStr; var N: SizeInt;
+  var ValAngle: double): boolean;
+{
+Supports units: 'deg', 'rad', 'grad', 'turn'.
+If any of units are found in S at position N, it multiplies ValAngle (in degrees)
+by corresponding factor (for 'deg' is doesn't multiply),
+and increases N by the length of unit-string.
+}
+begin
+  Result:= true;
+  if (S[N]='d') and (S[N+1]='e') and (S[N+2]='g') then
+  begin
+    Inc(N, 3);
+    if IsCodeWord(Ord(S[N])) then exit(false);
+  end
+  else
+  if (S[N]='r') and (S[N+1]='a') and (S[N+2]='d') then
+  begin
+    ValAngle:= ValAngle*(360.0/2/Pi);
+    Inc(N, 3);
+    if IsCodeWord(Ord(S[N])) then exit(false);
+  end
+  else
+  if (S[N]='g') and (S[N+1]='r') and (S[N+2]='a') and (S[N+3]='d') then
+  begin
+    ValAngle:= ValAngle*(360.0/400.0);
+    Inc(N, 4);
+    if IsCodeWord(Ord(S[N])) then exit(false);
+  end
+  else
+  if (S[N]='t') and (S[N+1]='u') and (S[N+2]='r') and (S[N+3]='n') then
+  begin
+    ValAngle:= ValAngle*360.0;
+    Inc(N, 4);
+    if IsCodeWord(Ord(S[N])) then exit(false);
+  end;
+end;
 
 class function TATHtmlColorParser.ParseFunctionHSL(const S: TStr;
   FromPos: SizeInt; out LenOfColor: integer): TColor;
@@ -373,34 +437,7 @@ begin
   if not bOk then exit;
   if N>NLen then exit;
   if N+4<=NLen then
-  begin
-    if (S[N]='d') and (S[N+1]='e') and (S[N+2]='g') then
-    begin
-      Inc(N, 3);
-      if IsCodeWord(Ord(S[N])) then exit;
-    end
-    else
-    if (S[N]='r') and (S[N+1]='a') and (S[N+2]='d') then
-    begin
-      ValAngle:= ValAngle*(360.0/2/Pi);
-      Inc(N, 3);
-      if IsCodeWord(Ord(S[N])) then exit;
-    end
-    else
-    if (S[N]='g') and (S[N+1]='r') and (S[N+2]='a') and (S[N+3]='d') then
-    begin
-      ValAngle:= ValAngle*(360.0/400.0);
-      Inc(N, 4);
-      if IsCodeWord(Ord(S[N])) then exit;
-    end
-    else
-    if (S[N]='t') and (S[N+1]='u') and (S[N+2]='r') and (S[N+3]='n') then
-    begin
-      ValAngle:= ValAngle*360.0;
-      Inc(N, 4);
-      if IsCodeWord(Ord(S[N])) then exit;
-    end;
-  end;
+    if not ParseAngleUnit(S, N, ValAngle) then exit;
   if ValAngle>cMaxDegrees then exit;
   if ValAngle<-cMaxDegrees then exit;
   while ValAngle<0.0 do
@@ -426,8 +463,8 @@ begin
   if bAlpha and (S[N]<>')') then
   begin
     SkipCommaOrSlash(S, N);
-    ValAlpha:= SkipFloat(S, N, false, true, bOk);
-    if ValAlpha<0 then exit;
+    ValAlpha:= SkipFloat(S, N, false{CalcValue}, true, bOk);
+    //if ValAlpha<0 then exit; //CalcValue=False so ValAlpha is always 0.0
   end;
   if S[N]<>')' then exit;
 
@@ -441,4 +478,3 @@ end;
 
 
 end.
-

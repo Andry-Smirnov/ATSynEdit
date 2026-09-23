@@ -19,24 +19,24 @@
 License: MPL 2.0 or LGPL
 }
 
-unit ATSynEdit_CanvasProc_Cairo;
+unit ATSynEdit_CanvasProc_Text_Gtk2_Old;
 
 {$mode Delphi}{$H+}
 
 interface
 
 uses
-  LCLType,
-  LCLIntf,
-  Types,
-  SysUtils,
   Graphics;
 
-  procedure CairoTextOut(ACanvas: TCanvas; AX, AY: Integer; AStr: PChar);
+procedure CairoTextOut(ACanvas: TCanvas; AX, AY: Integer; AStr: PChar);
 
 implementation
 
 uses
+  SysUtils,
+  Types,
+  LCLType,
+  LCLIntf,
   gdk2,
   Gtk2Def,
   Cairo,

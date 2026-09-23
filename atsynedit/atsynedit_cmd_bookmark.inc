@@ -18,7 +18,8 @@ begin
   Data:= Default(TATBookmarkData);
   Data.LineNum:= ALine;
   Data.Kind:= ABmKind;
-  Data.Hint:= StrNew(PChar(AHint));
+  if AHint<>'' then
+    Data.Hint:= StrNew(PChar(AHint));
   Data.AutoDelete:= AAutoDelete;
   Data.ShowInBookmarkList:= AShowInList;
   Data.Tag:= ATag;
@@ -26,6 +27,24 @@ begin
 
   DoChangeBookmarks;
   Update;
+end;
+
+procedure TATSynEdit.BookmarkAppendEx(ALine, ABmKind: integer;
+  const AHint: string; AAutoDelete: TATBookmarkAutoDelete;
+  AShowInList: boolean; ATag: integer;
+  ABookmarksObj: TATBookmarks);
+var
+  Data: TATBookmarkData;
+begin
+  Data:= Default(TATBookmarkData);
+  Data.LineNum:= ALine;
+  Data.Kind:= ABmKind;
+  if AHint<>'' then
+    Data.Hint:= StrNew(PChar(AHint));
+  Data.AutoDelete:= AAutoDelete;
+  Data.ShowInBookmarkList:= AShowInList;
+  Data.Tag:= ATag;
+  ABookmarksObj.Append(Data);
 end;
 
 procedure TATSynEdit.BookmarkSetForLine(ALine, ABmKind: integer;
@@ -78,7 +97,8 @@ begin
     Data:= Default(TATBookmarkData);
     Data.LineNum:= ALine;
     Data.Kind:= ABmKind;
-    Data.Hint:= StrNew(PChar(AHint));
+    if AHint<>'' then
+      Data.Hint:= StrNew(PChar(AHint));
     Data.AutoDelete:= AAutoDelete;
     Data.ShowInBookmarkList:= AShowInList;
     Data.Tag:= ATag;

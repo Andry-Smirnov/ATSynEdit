@@ -69,6 +69,7 @@ implementation
 
 uses
   Types,
+  ATSynEdit_CanvasProc_FillRect,
   ATSynEdit_Commands,
   ATSynEdit_Keymap_Init;
 
@@ -181,7 +182,7 @@ begin
 
   OptMicromapVisible:= true;
   OptComboboxShowX:= true;
-  OptMicromapScalePerColumn:= cInitComboboxButtonsScale;
+  OptMicromapWidthInAvgChars:= cInitComboboxButtonsScale;
   Micromap.Columns:= nil;
   Micromap.ColumnAdd(0, 100, clNone);
 
@@ -219,8 +220,7 @@ var
   X, Y, W_Icon, W_Line: integer;
   RectX: TRect;
 begin
-  C.Brush.Color:= Colors.ComboboxArrowBG;
-  C.FillRect(ARect);
+  CanvasFillRect(C, ARect, Colors.ComboboxArrowBG);
 
   if FOptComboboxShowX and not ModeReadOnly then
   begin

@@ -13,8 +13,15 @@ interface
 
 uses
   Classes, SysUtils,
+  ATStringProc,
   ATStrings,
   ATSynEdit_fgl;
+
+const
+  ATWrapInfo_MaxCacheLines = 1024*1024;
+    //2026.09: hard cap of lines in the wrap-items restore cache
+    //(hashes + items of deleted lines, to make undo of big blocks fast);
+    //memory: 8 bytes per line hash + 16 bytes per wrap-item
 
 type
   TATWrapItemFinal = (
@@ -68,19 +75,107 @@ type
     function IsIndexUniqueForLine(AIndex: integer): boolean;
     property Data[AIndex: integer]: TATWrapItem read GetData; default;
     procedure Add(const AData: TATWrapItem);
+    //2026.09.11 (CudaText perf): bulk add of all items (used by the full
+    //recalculation of WrapInfo): one capacity check + one memory-move per
+    //line, instead of the per-item Add() chain (3 nested calls + virtual
+    //CopyItem per item), which dominated the wrap-items storing for big
+    //wrapped documents; growth policy repeats TFPSList.Expand()
+    procedure AddItems(AItems: TATWrapItems);
+    //2026.09.12 (CudaText perf): buffer-friendly reset for the full
+    //recalculation: keeps the item buffer when it's big enough for the new
+    //document (Clear() frees it, then the refill re-allocs it through dozens
+    //of ReallocMem growth steps, copying ~4x the final item data)
+    procedure PrepareRecalc(AHintCapacity: SizeInt);
+    //2026.09.12: restores the list invariant "items after Count are zeroed"
+    //(stale items of the previous recalculation may remain in the tail)
+    procedure FinishRecalc;
     procedure Delete(AIndex: integer);
     procedure Insert(AIndex: integer; const AItem: TATWrapItem);
     procedure FindIndexesOfLineNumber(ALineNum: SizeInt; out AFrom, ATo: integer);
     function FindIndexOfCaretPos(APos: TPoint): integer;
     procedure SetCapacity(AValue: integer);
     procedure ReplaceItems(AFrom, ATo: integer; AItems: TATWrapItems);
+
+    //2026.09: primitives for the incremental WrapInfo update
+    function FindIndexOfLineNumber(ALine: SizeInt): integer; //first item index with NLineIndex>=ALine; Count when none
+    procedure DeleteItems(AFrom, ATo: integer); //remove items [AFrom..ATo], single memory-move
+    procedure SpliceItems(AIndex: integer; AItems: TATWrapItems); //insert all AItems at AIndex, single memory-move
+    procedure ShiftLineIndexes(AFromItem: integer; ADelta: SizeInt); //Inc(NLineIndex, ADelta) for items [AFromItem..]
   end;
+
+type
+  { TATWrapUpdateCache }
+
+  {
+  2026.09: performance fix (word-wrap). Cache of wrap-items of recently deleted
+  lines. When a big block of lines is deleted (e.g. DEL with big selection),
+  wrap-items of its lines are copied here with per-line text hashes. When the
+  same lines are re-inserted on UNDO (or REDO), items are restored from the
+  cache, instead of re-calculating the wrap for each line (which is the most
+  expensive part: per-char word-boundary and width calculations).
+  Restoration is verified by 64-bit hashes of line texts, so any other
+  inserted block (same position/count but different texts) never reuses
+  stale items: hashes don't match, and the slow per-line calculation runs.
+  Cache is cleared: on full WrapInfo recalculation, on wrap params change,
+  on folding changes (folded lines have no wrap-items, so cached items
+  don't match the unfolded restored lines).
+  }
+  TATWrapUpdateCache = class
+  private
+    function GetLineCount: integer;
+  public
+    WrapColumn: integer; //wrap params at the cache fill time
+    VisibleColumns: integer;
+    Hashes: array of QWord; //per cached line, cache-local index 0..N-1
+    Items: TATWrapItems; //items of cached lines, NLineIndex is cache-local line index
+    constructor Create; virtual;
+    destructor Destroy; override;
+    procedure Clear;
+    property LineCount: integer read GetLineCount;
+    procedure Populate(AWrapInfo: TATWrapInfo; ADeleteFrom, ADeleteCount: SizeInt;
+      const AHashes: array of QWord; AHashesAll: boolean;
+      AWrapColumn, AVisibleColumns: integer);
+    function TryRestore(const ACurHashes: array of QWord;
+      AInsertLine, AInsertCount: SizeInt;
+      AWrapColumn, AVisibleColumns: integer;
+      AOutItems: TATWrapItems): boolean;
+  end;
+
+
+procedure ATWrapInfo_CalcLine(
+  AStrings: TATStrings;
+  ATabHelper: TATStringTabHelper;
+  AEditorIndex: integer;
+  AWrapColumn: integer;
+  AWrapIndented: boolean;
+  AVisibleColumns: integer;
+  const ANonWordChars: atString;
+  ALineIndex: integer;
+  AIndentMaximal: integer;
+  AItems: TATWrapItems;
+  AConsiderFolding: boolean;
+  AFontProportional: boolean);
+
+function ATWrapInfo_ApplyStructOps(
+  AStrings: TATStrings;
+  AWrapInfo: TATWrapInfo;
+  ATempItems: TATWrapItems;
+  const AOps: TATWrapStructOpArray;
+  ACache: TATWrapUpdateCache;
+  ATabHelper: TATStringTabHelper;
+  AEditorIndex: integer;
+  AWrapColumn, AVisibleColumns, AIndentMaximal: integer;
+  AWrapIndented: boolean;
+  const ANonWordChars: atString;
+  AConsiderFolding: boolean;
+  AFontProportional: boolean): boolean;
 
 
 implementation
 
 uses
-  Math, Dialogs, Forms;
+  Math, Dialogs, Forms,
+  ATSynEdit_Globals;
 
 { TATWrapItem }
 
@@ -203,6 +298,82 @@ begin
   FList.Add(AData);
 end;
 
+procedure TATWrapInfo.AddItems(AItems: TATWrapItems);
+var
+  N, NCount, NCapy: integer;
+begin
+  if FVirtualMode then exit;
+  N:= AItems.Count;
+  if N=0 then exit;
+
+  NCount:= FList.Count;
+  if NCount+N > FList.Capacity then
+  begin
+    //grow like TFPSList.Expand() does (+25% etc), but enough for all N items
+    NCapy:= FList.Capacity;
+    if NCapy>127 then
+      Inc(NCapy, NCapy shr 2)
+    else
+    if NCapy>8 then
+      Inc(NCapy, 16)
+    else
+    if NCapy>3 then
+      Inc(NCapy, 8)
+    else
+      Inc(NCapy, 4);
+    if NCapy < NCount+N then
+      NCapy:= NCount+N;
+    if NCapy>MaxListSize then
+      NCapy:= MaxListSize;
+    FList.Capacity:= NCapy;
+  end;
+
+  //2026.09.12 (CudaText perf): items are moved BEFORE growing Count, and
+  //Count grows via SetCountFast() without the zero-fill: SetCount()
+  //zero-filled the new slots which are fully overwritten right after, i.e.
+  //every wrap item was written twice (for a 1M-lines word-wrapped document
+  //that is ~170Mb of useless memory writes per full WrapInfo recalculation).
+  //Slots after Count stay zeroed (SetCapacity zero-fills new capacity), so
+  //the list invariant is kept
+  FList.SetCountFast(NCount+N);
+  System.Move(AItems._GetItemPtr(0)^, FList.ItemPtrRaw(NCount)^, N*SizeOf(TATWrapItem));
+end;
+
+procedure TATWrapInfo.PrepareRecalc(AHintCapacity: SizeInt);
+begin
+  if FVirtualMode then exit;
+  if AHintCapacity > MaxListSize then
+    AHintCapacity:= MaxListSize;
+  if AHintCapacity < 0 then
+    AHintCapacity:= 0;
+  //2026.09.12 (CudaText perf): don't free the item buffer here: the old code
+  //called Clear() (which frees the buffer) and the following AddItems() loop
+  //re-allocated it through dozens of ReallocMem growth steps, copying about
+  //4x of the final item data (for 1M word-wrapped lines: ~700Mb of extra
+  //memory copying + page-faulting of fresh pages on Windows). Keeping the
+  //buffer makes the repeated full recalculation (window resize, wrap-mode
+  //toggle) allocation-free. Buffer is trimmed only when the new document
+  //is much smaller (4x) than the buffer, to not hold huge unused memory
+  FList.SetCountFast(0);
+  if FList.Capacity < AHintCapacity then
+    FList.Capacity:= AHintCapacity
+  else
+  if FList.Capacity > AHintCapacity*4 + 1024 then
+    FList.Capacity:= AHintCapacity;
+end;
+
+procedure TATWrapInfo.FinishRecalc;
+var
+  NTail: SizeInt;
+begin
+  if FVirtualMode then exit;
+  //restore the list invariant "items after Count are zeroed": the buffer is
+  //reused, so the tail can contain stale items of the previous recalculation
+  NTail:= FList.Capacity - FList.Count + 1; //+1: the temp slot after Capacity
+  if NTail>0 then
+    FillChar(FList.ItemPtrRaw(FList.Count)^, NTail*SizeOf(TATWrapItem), 0);
+end;
+
 procedure TATWrapInfo.Delete(AIndex: integer);
 begin
   if FVirtualMode then exit;
@@ -306,6 +477,617 @@ begin
   //overwrite N items
   for i:= 0 to AItems.Count-1 do
     FList[AFrom+i]:= AItems[i];
+end;
+
+
+{ TATWrapInfo: primitives for the incremental update }
+
+function TATWrapInfo.FindIndexOfLineNumber(ALine: SizeInt): integer;
+var
+  a, b, m: integer;
+begin
+  if FVirtualMode then
+    Exit(Max(0, Min(ALine, FStrings.Count)));
+
+  //binary search of lower bound: first item with NLineIndex>=ALine
+  a:= 0;
+  b:= FList.Count;
+  while a<b do
+  begin
+    m:= (a+b) div 2;
+    if FList._GetItemPtr(m)^.NLineIndex < ALine then
+      a:= m+1
+    else
+      b:= m;
+  end;
+  Result:= a;
+end;
+
+procedure TATWrapInfo.DeleteItems(AFrom, ATo: integer);
+begin
+  if FVirtualMode then exit;
+  if (AFrom<0) or (AFrom>ATo) or (ATo>=FList.Count) then exit;
+  FList.DeleteRange(AFrom, ATo);
+end;
+
+procedure TATWrapInfo.SpliceItems(AIndex: integer; AItems: TATWrapItems);
+var
+  i: integer;
+begin
+  if FVirtualMode then exit;
+  if AItems=nil then exit;
+  if AItems.Count=0 then exit;
+
+  if (AIndex<0) or (AIndex>FList.Count) then
+    AIndex:= FList.Count;
+
+  FList.InsertRange(AIndex, AItems.Count);
+  for i:= 0 to AItems.Count-1 do
+    FList._GetItemPtr(AIndex+i)^:= AItems._GetItemPtr(i)^;
+end;
+
+procedure TATWrapInfo.ShiftLineIndexes(AFromItem: integer; ADelta: SizeInt);
+var
+  i: integer;
+begin
+  if FVirtualMode then exit;
+  if ADelta=0 then exit;
+  for i:= Max(0, AFromItem) to FList.Count-1 do
+    FList._GetItemPtr(i)^.NLineIndex+= ADelta;
+end;
+
+
+{ TATWrapUpdateCache }
+
+function TATWrapUpdateCache.GetLineCount: integer;
+begin
+  Result:= Length(Hashes);
+end;
+
+constructor TATWrapUpdateCache.Create;
+begin
+  Items:= TATWrapItems.Create;
+end;
+
+destructor TATWrapUpdateCache.Destroy;
+begin
+  Clear;
+  FreeAndNil(Items);
+  inherited;
+end;
+
+procedure TATWrapUpdateCache.Clear;
+begin
+  SetLength(Hashes, 0);
+  if Items<>nil then
+    Items.Clear;
+end;
+
+procedure TATWrapUpdateCache.Populate(AWrapInfo: TATWrapInfo; ADeleteFrom, ADeleteCount: SizeInt;
+  const AHashes: array of QWord; AHashesAll: boolean;
+  AWrapColumn, AVisibleColumns: integer);
+var
+  iFrom, iTo, i: integer;
+  Item: TATWrapItem;
+begin
+  Clear;
+  if not AHashesAll then Exit;
+  if ADeleteCount<=0 then Exit;
+  if ADeleteCount>ATWrapInfo_MaxCacheLines then Exit;
+  if ADeleteCount<>Length(AHashes) then Exit;
+
+  WrapColumn:= AWrapColumn;
+  VisibleColumns:= AVisibleColumns;
+
+  SetLength(Hashes, ADeleteCount);
+  for i:= 0 to ADeleteCount-1 do
+    Hashes[i]:= AHashes[i];
+
+  //copy wrap-items of deleted lines, with cache-local line indexes
+  iFrom:= AWrapInfo.FindIndexOfLineNumber(ADeleteFrom);
+  iTo:= AWrapInfo.FindIndexOfLineNumber(ADeleteFrom+ADeleteCount)-1;
+  if iTo>=iFrom then
+    for i:= iFrom to iTo do
+    begin
+      Item:= AWrapInfo.Data[i];
+      Dec(Item.NLineIndex, ADeleteFrom);
+      Items.Add(Item);
+    end;
+end;
+
+function TATWrapUpdateCache.TryRestore(const ACurHashes: array of QWord;
+  AInsertLine, AInsertCount: SizeInt;
+  AWrapColumn, AVisibleColumns: integer;
+  AOutItems: TATWrapItems): boolean;
+{
+ACurHashes[]: hashes of current document lines, which the AInsertLine..AInsertLine+AInsertCount-1
+op inserts (caller computes them at FINAL document positions). When they match a sub-range of
+cached Hashes[], wrap-items of that sub-range are restored to AOutItems, with line indexes
+in "insert-op" coordinates (AInsertLine + offset), so the caller's sequential application
+shifts them correctly.
+}
+var
+  K0, K, i, j, d: SizeInt;
+  bMatch: boolean;
+  NWrite: integer;
+  Item: TATWrapItem;
+begin
+  Result:= false;
+  if AOutItems=nil then Exit;
+  AOutItems.Clear;
+
+  K0:= Length(Hashes);
+  if K0=0 then Exit;
+  if (WrapColumn<>AWrapColumn) or (VisibleColumns<>AVisibleColumns) then Exit;
+  K:= AInsertCount;
+  if (K<=0) or (K>K0) then Exit;
+  if Length(ACurHashes)<>K then Exit;
+
+  //find the offset of ACurHashes inside cached Hashes
+  d:= -1;
+  for i:= 0 to K0-K do
+    if Hashes[i]=ACurHashes[0] then
+    begin
+      bMatch:= true;
+      for j:= 1 to K-1 do
+        if Hashes[i+j]<>ACurHashes[j] then
+        begin
+          bMatch:= false;
+          Break
+        end;
+      if bMatch then
+      begin
+        d:= i;
+        Break
+      end;
+    end;
+  if d<0 then Exit;
+
+  //extract items of matched lines, with line indexes of the inserted block
+  for i:= 0 to Items.Count-1 do
+  begin
+    Item:= Items[i];
+    if (Item.NLineIndex>=d) and (Item.NLineIndex<d+K) then
+    begin
+      Item.NLineIndex:= AInsertLine + (Item.NLineIndex-d);
+      AOutItems.Add(Item);
+    end;
+  end;
+
+  //trim the cache: drop the consumed lines
+  if (d=0) and (K=K0) then
+    Clear
+  else
+  if d=0 then
+  begin
+    //prefix consumed: drop first K lines, shift the rest
+    for i:= K to K0-1 do
+      Hashes[i-K]:= Hashes[i];
+    SetLength(Hashes, K0-K);
+    NWrite:= 0;
+    for i:= 0 to Items.Count-1 do
+      if Items[i].NLineIndex>=K then
+      begin
+        Item:= Items[i];
+        Dec(Item.NLineIndex, K);
+        Items[NWrite]:= Item;
+        Inc(NWrite);
+      end;
+    while Items.Count>NWrite do
+      Items.Delete(Items.Count-1);
+  end
+  else
+  if d+K=K0 then
+  begin
+    //suffix consumed: drop last K lines
+    SetLength(Hashes, K0-K);
+    NWrite:= 0;
+    for i:= 0 to Items.Count-1 do
+      if Items[i].NLineIndex<K0-K then
+      begin
+        Items[NWrite]:= Items[i];
+        Inc(NWrite);
+      end;
+    while Items.Count>NWrite do
+      Items.Delete(Items.Count-1);
+  end
+  else
+    //middle consumed: don't support split cache, drop it all
+    Clear;
+
+  Result:= true;
+end;
+
+
+{ ATWrapInfo_CalcLine }
+
+procedure ATWrapInfo_CalcLine(
+  AStrings: TATStrings;
+  ATabHelper: TATStringTabHelper;
+  AEditorIndex: integer;
+  AWrapColumn: integer;
+  AWrapIndented: boolean;
+  AVisibleColumns: integer;
+  const ANonWordChars: atString;
+  ALineIndex: integer;
+  AIndentMaximal: integer;
+  AItems: TATWrapItems;
+  AConsiderFolding: boolean;
+  AFontProportional: boolean);
+const
+  //2026.09 (CudaText perf): stack buffer for one scanned line part; must
+  //cover the part cap: ATEditorOptions.MaxVisibleColumns (proportional
+  //fonts) and any realistic visible-columns count of monospaced fonts
+  //(window wider than ~16K pixels); clamped below for safety
+  cWrapPartBufMax = 2048;
+var
+  WrapItem: TATWrapItem;
+  WrapItemPtr: PATWrapItem;
+  NLineLen, NPartLen, NFoldFrom: integer;
+  NPartOffset, NIndent, NVisColumns: integer;
+  NPartCap, NBufLen: integer;
+  bInitialItem: boolean;
+  Buf: array[0..cWrapPartBufMax-1] of WideChar;
+  //2026.09.12 (CudaText perf): raw-ASCII fast path state
+  PLineBytes: PByte;
+  NLineBytes: SizeInt;
+  NRest, NIndentLen: integer;
+begin
+  //2026.09.12 (CudaText perf): SetCount(0) instead of Clear(): Clear() also
+  //does SetCapacity(0), which FREES the item buffer, so the per-line call of
+  //ATWrapInfo_CalcLine() from the full WrapInfo recalculation made the temp
+  //list re-allocate its buffer on EVERY document line (1M lines: ~0.5 sec of
+  //pure heap churn). SetCount(0) keeps Capacity; TATWrapItem is an unmanaged
+  //record, so stale bytes after Count cannot harm (Deref is a no-op, and
+  //nothing reads items beyond Count)
+  AItems.SetCountFast(0);
+
+  //line folded entirely?
+  if AConsiderFolding then
+    if AStrings.LinesHidden[ALineIndex, AEditorIndex] then Exit;
+
+  NLineLen:= AStrings.LinesLen[ALineIndex];
+
+  if NLineLen=0 then
+  begin
+    WrapItem.Init(ALineIndex, 1, 0, 0, TATWrapItemFinal.Final, true);
+    AItems.Add(WrapItem);
+    Exit;
+  end;
+
+  //consider fold, before wordwrap
+  if AConsiderFolding then
+  begin
+    //line folded partially?
+    NFoldFrom:= AStrings.LinesFoldFrom[ALineIndex, AEditorIndex];
+    if NFoldFrom>0 then
+    begin
+      WrapItem.Init(ALineIndex, 1, Min(NLineLen, NFoldFrom-1), 0, TATWrapItemFinal.Collapsed, true);
+      AItems.Add(WrapItem);
+      Exit;
+    end;
+  end;
+
+  //line not wrapped?
+  if (AWrapColumn<ATEditorOptions.MinWrapColumnAbs) then
+  begin
+    WrapItem.Init(ALineIndex, 1, NLineLen, 0, TATWrapItemFinal.Final, true);
+    AItems.Add(WrapItem);
+    Exit;
+  end;
+
+  NVisColumns:= Max(AVisibleColumns, ATEditorOptions.MinWrapColumnAbs);
+  if AFontProportional then
+    NPartCap:= ATEditorOptions.MaxVisibleColumns
+  else
+    NPartCap:= NVisColumns;
+
+  NPartCap:= Min(NPartCap, cWrapPartBufMax);
+
+  //2026.09.12 (CudaText perf): raw-ASCII fast path - for ASCII-stored lines
+  //(Ex.Wide=false: chars=bytes, all bytes <128) the word-wrap scan works
+  //directly on the line's ANSI buffer (FindWordWrapOffsetBytes), skipping
+  //the per-part byte-to-WideChar conversion (TATStringItem.LineSubBuf,
+  //~0.2s per 1M lines x 500 chars on the reference machine). Wide-stored
+  //lines, proportional fonts and non-printable-ASCII parts (tab/controls)
+  //use the original PWideChar path - results are identical in all cases
+  PLineBytes:= nil;
+  NLineBytes:= 0;
+  if not AFontProportional then
+    AStrings.LineBytesPtr(ALineIndex, PLineBytes, NLineBytes);
+
+  NPartOffset:= 1;
+  NIndent:= 0;
+  bInitialItem:= true;
+  NBufLen:= 0; //filled by the PWideChar path only (indent source check)
+
+  repeat
+    //2026.09 (CudaText perf): the line part is copied to the stack buffer and
+    //scanned by pointer (LineSubBuf + FindWordWrapOffsetBuf): no UnicodeString
+    //is allocated per part (was: LineSub + string assign per part, which
+    //dominated the wrap calc time of big documents)
+    //2026.09.12: ASCII-stored lines skip the conversion - the raw bytes are
+    //scanned in place; FindWordWrapOffsetBytes returns -1 when the part is
+    //not pure printable ASCII, then the PWideChar path runs for this part
+    NPartLen:= -1;
+    if PLineBytes<>nil then
+    begin
+      NRest:= NLineBytes-(NPartOffset-1);
+      if NRest<=0 then
+      begin
+        if not bInitialItem then
+        begin
+          WrapItemPtr:= AItems._GetItemPtr(AItems.Count-1);
+          WrapItemPtr^.NFinal:= TATWrapItemFinal.Final;
+        end;
+        Break;
+      end;
+      NPartLen:= ATabHelper.FindWordWrapOffsetBytes(
+        PLineBytes+(NPartOffset-1),
+        Min(NPartCap, NRest),
+        Max(AWrapColumn-NIndent, ATEditorOptions.MinWrapColumnAbs),
+        ANonWordChars,
+        AWrapIndented);
+    end;
+
+    if NPartLen<0 then
+    begin
+      NBufLen:= AStrings.LineSubBuf(ALineIndex, NPartOffset, NPartCap, @Buf[0]);
+
+      if NBufLen=0 then
+      begin
+        if not bInitialItem then
+        begin
+          WrapItemPtr:= AItems._GetItemPtr(AItems.Count-1);
+          WrapItemPtr^.NFinal:= TATWrapItemFinal.Final;
+        end;
+        Break;
+      end;
+
+      NPartLen:= ATabHelper.FindWordWrapOffsetBuf(
+        ALineIndex,
+        //very slow to calc for entire line (eg len=70K),
+        //calc for first NVisColumns chars
+        @Buf[0],
+        NBufLen,
+        Max(AWrapColumn-NIndent, ATEditorOptions.MinWrapColumnAbs),
+        ANonWordChars,
+        AWrapIndented
+        );
+    end;
+
+    WrapItem.Init(ALineIndex, NPartOffset, NPartLen, NIndent, TATWrapItemFinal.Middle, bInitialItem);
+    AItems.Add(WrapItem);
+    bInitialItem:= false;
+
+    if AWrapIndented then
+      if NPartOffset=1 then
+      begin
+        if NBufLen>0 then
+          NIndent:= ATabHelper.GetIndentExpandedBuf(ALineIndex, @Buf[0], NBufLen)
+        else
+        begin
+          //part 1 used the raw-ASCII path: count leading #32 bytes of the
+          //same char range (GetIndentExpandedBuf's tab branch cannot run:
+          //tab is not accepted by the byte path, so IsCharSpace = #32 only)
+          NIndent:= 0;
+          NIndentLen:= Min(NPartCap, NLineBytes);
+          while (NIndent<NIndentLen) and (PLineBytes[NIndent]=32) do
+            Inc(NIndent);
+        end;
+        NIndent:= Min(NIndent, AIndentMaximal);
+      end;
+
+    Inc(NPartOffset, NPartLen);
+  until false;
+end;
+
+
+{ ATWrapInfo_ApplyStructOps }
+
+function ATWrapInfo_ApplyStructOps(
+  AStrings: TATStrings;
+  AWrapInfo: TATWrapInfo;
+  ATempItems: TATWrapItems;
+  const AOps: TATWrapStructOpArray;
+  ACache: TATWrapUpdateCache;
+  ATabHelper: TATStringTabHelper;
+  AEditorIndex: integer;
+  AWrapColumn, AVisibleColumns, AIndentMaximal: integer;
+  AWrapIndented: boolean;
+  const ANonWordChars: atString;
+  AConsiderFolding: boolean;
+  AFontProportional: boolean): boolean;
+{
+2026.09: performance fix (word-wrap). Applies structural line ops (recorded by
+TATStrings.WrapStructRecord since the last WrapInfo update) to AWrapInfo
+incrementally:
+- for deleted lines: wrap-items of these lines are removed (single
+  memory-move), and line indexes of items below are shifted up; removed items
+  are copied to ACache (with line text hashes), to be restored on undo;
+- for inserted lines: line indexes of items below are shifted down, wrap-items
+  for new lines are calculated (per-line, like the full recalculation does) or
+  restored from ACache (when UNDO re-inserts the same lines, verified by
+  hashes), and spliced in (single memory-move).
+So the cost is O(total wrap-items) for index shifts + O(new lines) for the
+wrap calculation, instead of O(all lines) of the full recalculation. E.g.
+CudaText test (300K lines, wrap on): DEL of 200K lines ~6.4 sec -> ~0.05 sec,
+UNDO of it ~19-60 sec -> ~1 sec.
+Then it recalculates wrap-items for edited lines (TATStrings.IndexesOfEditedLines),
+like the old "cached update" did.
+Returns False when ops cannot be applied (then caller must fully recalculate):
+- no ops and no edited lines;
+- sanity check fails: WrapInfo's StringsPrevCount + net line change <> current
+  line count (some untracked change happened: e.g. document was loaded).
+}
+var
+  NewItems: TATWrapItems;
+  ListNums: TATIntegerList;
+  i, j, k: SizeInt;
+  NCur: SizeInt;
+  NLine, NIndexFrom, NIndexTo, NSplice: integer;
+  bRestored: boolean;
+  FinalPos: array of SizeInt;
+  CurHashes: array of QWord;
+  WrapItem: TATWrapItem;
+begin
+  Result:= false;
+  if (AStrings=nil) or (AWrapInfo=nil) then Exit;
+  if AWrapInfo.VirtualMode then Exit;
+
+  if Length(AOps)=0 then
+    if AStrings.IndexesOfEditedLines.Count=0 then
+      Exit; //nothing to apply
+
+  //sanity: WrapInfo must match the doc state before ops, and all ops must
+  //have valid line ranges (indexes are in "doc state before op" coordinates);
+  //when the check fails (e.g. doc was loaded/replaced, so ops are not valid
+  //anymore), caller must use the full recalculation
+  NCur:= AWrapInfo.StringsPrevCount;
+  if NCur<0 then Exit;
+  for i:= 0 to High(AOps) do
+  begin
+    case AOps[i].Kind of
+      TATWrapStructOpKind.Inserted:
+        begin
+          if (AOps[i].Line<0) or (AOps[i].Line>NCur) then Exit;
+          Inc(NCur, AOps[i].Count);
+        end;
+      TATWrapStructOpKind.Deleted:
+        begin
+          if (AOps[i].Line<0) or (AOps[i].Line+AOps[i].Count>NCur) then Exit;
+          Dec(NCur, AOps[i].Count);
+        end;
+    end;
+  end;
+  if NCur<>AStrings.Count then Exit;
+
+  NewItems:= TATWrapItems.Create;
+  try
+    for i:= 0 to High(AOps) do
+    begin
+      case AOps[i].Kind of
+        TATWrapStructOpKind.Inserted:
+          begin
+            //shift line indexes of items at/below the insertion point
+            NSplice:= AWrapInfo.FindIndexOfLineNumber(AOps[i].Line);
+            AWrapInfo.ShiftLineIndexes(NSplice, AOps[i].Count);
+
+            //map "position after this op" of each new line to its position in
+            //the final document: WrapInfo ops are applied sequentially (item
+            //line indexes are in "after this op" coordinates, later ops shift
+            //them), but the document is already in its final state, so new
+            //lines must be read at their FINAL positions
+            SetLength(FinalPos, AOps[i].Count);
+            for j:= 0 to AOps[i].Count-1 do
+            begin
+              NLine:= AOps[i].Line+j;
+              for k:= i+1 to High(AOps) do
+                case AOps[k].Kind of
+                  TATWrapStructOpKind.Inserted:
+                    if AOps[k].Line<=NLine then
+                      Inc(NLine, AOps[k].Count);
+                  TATWrapStructOpKind.Deleted:
+                    begin
+                      if AOps[k].Line+AOps[k].Count<=NLine then
+                        Dec(NLine, AOps[k].Count)
+                      else
+                      if (AOps[k].Line<=NLine) and (NLine<AOps[k].Line+AOps[k].Count) then
+                        Exit; //line is deleted by a later op: not supported, full recalc
+                    end;
+                end;
+              if (NLine<0) or (NLine>=AStrings.Count) then Exit;
+              FinalPos[j]:= NLine;
+            end;
+
+            //wrap-items for new lines: restore from cache or calculate
+            NewItems.Clear;
+            bRestored:= false;
+            if ACache<>nil then
+              if not AConsiderFolding then
+              begin
+                SetLength(CurHashes, AOps[i].Count);
+                for j:= 0 to AOps[i].Count-1 do
+                  CurHashes[j]:= AStrings.GetLineHash(FinalPos[j]);
+                bRestored:= ACache.TryRestore(CurHashes, AOps[i].Line, AOps[i].Count,
+                  AWrapColumn, AVisibleColumns, NewItems);
+              end;
+
+            if not bRestored then
+              for j:= 0 to AOps[i].Count-1 do
+              begin
+                ATWrapInfo_CalcLine(AStrings, ATabHelper, AEditorIndex,
+                  AWrapColumn, AWrapIndented, AVisibleColumns, ANonWordChars,
+                  FinalPos[j], AIndentMaximal, ATempItems, AConsiderFolding,
+                  AFontProportional);
+                //ATempItems has 1+ items of this line (CalcLine cleared it);
+                //item line index must be "position after this op", not final
+                for k:= 0 to ATempItems.Count-1 do
+                begin
+                  WrapItem:= ATempItems[k];
+                  WrapItem.NLineIndex:= AOps[i].Line+j;
+                  NewItems.Add(WrapItem);
+                end;
+                ATempItems.Clear;
+              end;
+
+            AWrapInfo.SpliceItems(NSplice, NewItems);
+          end;
+
+        TATWrapStructOpKind.Deleted:
+          begin
+            //populate cache: copy items of deleted lines (before removal)
+            if ACache<>nil then
+              if not AConsiderFolding then
+                ACache.Populate(AWrapInfo, AOps[i].Line, AOps[i].Count,
+                  AOps[i].Hashes, AOps[i].HashesAll, AWrapColumn, AVisibleColumns)
+              else
+                ACache.Clear
+            else
+              ; //no cache
+
+            //remove items of deleted lines, shift indexes of items below
+            j:= AWrapInfo.FindIndexOfLineNumber(AOps[i].Line);
+            NIndexTo:= AWrapInfo.FindIndexOfLineNumber(AOps[i].Line+AOps[i].Count)-1;
+            AWrapInfo.DeleteItems(j, NIndexTo);
+            AWrapInfo.ShiftLineIndexes(j, -AOps[i].Count);
+          end;
+      end;
+    end;
+
+    //recalc wrap-items of edited lines (same as the old "cached update" did)
+    if AStrings.IndexesOfEditedLines.Count>0 then
+    begin
+      ListNums:= TATIntegerList.Create;
+      try
+        ListNums.Assign(AStrings.IndexesOfEditedLines);
+        for i:= 0 to ListNums.Count-1 do
+        begin
+          NLine:= ListNums[i];
+          if not AStrings.IsIndexValid(NLine) then Continue;
+
+          ATWrapInfo_CalcLine(AStrings, ATabHelper, AEditorIndex,
+            AWrapColumn, AWrapIndented, AVisibleColumns, ANonWordChars,
+            NLine, AIndentMaximal, ATempItems, AConsiderFolding,
+            AFontProportional);
+          if ATempItems.Count=0 then Continue;
+
+          AWrapInfo.FindIndexesOfLineNumber(NLine, NIndexFrom, NIndexTo);
+          if NIndexFrom>=0 then
+            AWrapInfo.ReplaceItems(NIndexFrom, NIndexTo, ATempItems);
+        end;
+        ATempItems.Clear;
+      finally
+        FreeAndNil(ListNums);
+      end;
+    end;
+
+    Result:= true;
+  finally
+    FinalPos:= nil;
+    CurHashes:= nil;
+    FreeAndNil(NewItems);
+  end;
 end;
 
 

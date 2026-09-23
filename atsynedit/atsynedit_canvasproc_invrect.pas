@@ -1,0 +1,374 @@
+{
+Copyright (C) Alexey Torgashin, uvviewsoft.com
+License: MPL 2.0 or LGPL
+}
+unit ATSynEdit_CanvasProc_InvRect;
+
+{$mode objfpc}{$H+}
+
+{
+Code for gtk3 makes CudaText rendering faster by ~1.5 times.
+Code for gtk2: only little faster.
+}
+
+interface
+
+uses
+  Graphics, Types;
+
+procedure CanvasInvertRect(C: TCanvas; const R: TRect; AColor: TColor);
+procedure CanvasInvertRectEmptyInside(C: TCanvas; const R: TRect; AColor: TColor);
+
+implementation
+
+uses
+  {$ifdef LCLWin32}
+  Windows,
+  {$endif}
+  {$ifdef LCLGtk3}
+  Gtk3Objects,
+  Cairo,
+  {$endif}
+  {$ifdef LCLGtk2}
+  Gdk2,
+  Gtk2Def,
+  {$endif}
+  {$ifdef LCLQt5}
+  Qt5,
+  QtObjects,
+  QtWidgets,
+  {$endif}
+  Classes;
+
+const
+  INV255 = Double(1.0/255.0);
+
+{$ifdef LCLWin32}
+const
+  DC_BRUSH   = 18; // missed in Windows unit of old FPC
+
+{$define HAS_INV2}
+procedure CanvasInvertRectEmptyInside(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  DC: HDC;
+  OldBrush: HGDIOBJ;
+  W, H: Integer;
+begin
+  DC := HDC(C.Handle);
+  if DC = 0 then Exit;
+
+  W := R.Right - R.Left;
+  H := R.Bottom - R.Top;
+
+  SetDCBrushColor(DC, AColor);
+  OldBrush := SelectObject(DC, GetStockObject(DC_BRUSH));
+
+  // Top edge
+  PatBlt(DC, R.Left, R.Top, W, 1, PATINVERT);
+  // Bottom edge
+  PatBlt(DC, R.Left, R.Bottom - 1, W, 1, PATINVERT);
+
+  if H > 2 then
+  begin
+    // Left edge (w/o edges)
+    PatBlt(DC, R.Left, R.Top + 1, 1, H - 2, PATINVERT);
+    // Right edge (w/o edges)
+    PatBlt(DC, R.Right - 1, R.Top + 1, 1, H - 2, PATINVERT);
+  end;
+
+  SelectObject(DC, OldBrush);
+end;
+
+{$define HAS_INV}
+procedure CanvasInvertRect(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  DC: HDC;
+  OldBrush: HGDIOBJ;
+begin
+  if not Assigned(C) then Exit;
+  DC := HDC(C.Handle);
+  if DC = 0 then Exit;
+
+  // SetDCBrushColor — does not create brush object, only changes color in DC.
+  // much faster than CreateSolidBrush/DeleteObject.
+  SetDCBrushColor(DC, AColor);
+  OldBrush := SelectObject(DC, GetStockObject(DC_BRUSH));
+
+  // PATINVERT: result = pixel XOR brush_color
+  PatBlt(DC, R.Left, R.Top, R.Width, R.Height, PATINVERT);
+
+  SelectObject(DC, OldBrush);
+end;
+{$endif}
+
+{$ifdef LCLGtk3}
+{$define HAS_INV}
+procedure CanvasInvertRect(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  cr: Pcairo_t;
+begin
+  if (C.Handle = 0) then Exit;
+
+  cr := pcairo_t(TGtk3DeviceContext(C.Handle).pcr);
+  if cr = nil then Exit;
+
+  cairo_save(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_DIFFERENCE);
+  cairo_set_source_rgb(cr,
+    (AColor and $FF) * INV255,
+    ((AColor shr 8) and $FF) * INV255,
+    ((AColor shr 16) and $FF) * INV255
+    );
+  cairo_rectangle(cr, R.Left, R.Top, R.Width, R.Height);
+  cairo_fill(cr);
+  cairo_restore(cr);
+end;
+
+{$define HAS_INV2}
+procedure CanvasInvertRectEmptyInside(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  cr: Pcairo_t;
+begin
+  if (C.Handle = 0) then Exit;
+
+  cr := Pcairo_t(TGtk3DeviceContext(C.Handle).pcr);
+  if cr = nil then Exit;
+
+  cairo_save(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_DIFFERENCE);
+  cairo_set_source_rgb(cr,
+    (AColor and $FF) * INV255,
+    ((AColor shr 8) and $FF) * INV255,
+    ((AColor shr 16) and $FF) * INV255
+    );
+
+  // offset 0.5 aligns line to grid
+  cairo_set_line_width(cr, 1.0);
+  cairo_rectangle(cr, R.Left + 0.5, R.Top + 0.5,
+                  R.Right - R.Left - 1, R.Bottom - R.Top - 1);
+  cairo_stroke(cr);
+  cairo_restore(cr);
+end;
+{$endif}
+
+{$ifdef LCLGtk2}
+{$define HAS_INV}
+procedure CanvasInvertRect(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  DC: TGtkDeviceContext;
+  gc: PGdkGC;
+  drawable: PGdkDrawable;
+  col: TGdkColor;
+  W, H: Integer;
+begin
+  if (C.Handle = 0) then Exit;
+
+  W := R.Width;
+  H := R.Height;
+
+  DC := TGtkDeviceContext(C.Handle);
+  drawable := DC.Drawable;
+  gc := DC.GC;
+  if (drawable = nil) or (gc = nil) then Exit;
+
+  col.red   := Red(AColor) * $101;
+  col.green := Green(AColor) * $101;
+  col.blue  := Blue(AColor) * $101;
+
+  // gdk_gc_set_fill(gc, GDK_SOLID); // not needed yet
+  gdk_gc_set_rgb_fg_color(gc, @col);
+  gdk_gc_set_function(gc, GDK_XOR);
+  
+  gdk_draw_rectangle(drawable, gc, 1, R.Left, R.Top, W, H);
+  
+  gdk_gc_set_function(gc, GDK_COPY);
+end;
+
+{$define HAS_INV2}
+procedure CanvasInvertRectEmptyInside(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  DC: TGtkDeviceContext;
+  gc: PGdkGC;
+  drawable: PGdkDrawable;
+  col: TGdkColor;
+  W, H: Integer;
+begin
+  if (C.Handle = 0) then Exit;
+
+  W := R.Width;
+  H := R.Height;
+
+  DC := TGtkDeviceContext(C.Handle);
+  drawable := DC.Drawable;
+  gc := DC.GC;
+  if (drawable = nil) or (gc = nil) then Exit;
+
+  col.red   := Red(AColor) * $101;
+  col.green := Green(AColor) * $101;
+  col.blue  := Blue(AColor) * $101;
+
+  gdk_gc_set_line_attributes(gc, 1, GDK_LINE_SOLID, GDK_CAP_NOT_LAST, GDK_JOIN_MITER);
+  gdk_gc_set_rgb_fg_color(gc, @col);
+  gdk_gc_set_function(gc, GDK_XOR);
+
+  // filled = 0 → only the outline, 1-pixel wide by default
+  // Use W-1, H-1 so the stroke lands exactly within R
+  gdk_draw_rectangle(drawable, gc, 0, R.Left, R.Top, W - 1, H - 1);
+
+  gdk_gc_set_function(gc, GDK_COPY);
+end;
+{$endif}
+
+{$IFDEF LCLQt5}
+{$define HAS_INV}
+procedure CanvasInvertRect(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  DC: TQtDeviceContext;
+  Painter: QPainterH;
+  QColorObj: QColorH;
+  QBrushObj: QBrushH;
+  QRectFObj: QRectFH;
+begin
+  if (C = nil) or (C.Handle = 0) then Exit;
+
+  DC := TQtDeviceContext(C.Handle);
+  Painter := DC.Widget;
+  if Painter = nil then Exit;
+
+  // for classic inversion, use white color
+  QColorObj := QColor_Create();
+  QColor_setRgb(QColorObj, 255, 255, 255, 255);
+
+  QBrushObj := QBrush_Create(PQColor(QColorObj), QtSolidPattern);
+  QRectFObj := QRectF_create(R.Left, R.Top, R.Width, R.Height);
+
+  QPainter_save(Painter);
+  try
+    QPainter_setCompositionMode(Painter, QPainterCompositionMode_Difference);
+    QPainter_fillRect(Painter, QRectFObj, QBrushObj);
+  finally
+    QPainter_restore(Painter);
+  end;
+
+  QRectF_destroy(QRectFObj);
+  QBrush_Destroy(QBrushObj);
+  QColor_Destroy(QColorObj);
+end;
+
+{$define HAS_INV2}
+procedure CanvasInvertRectEmptyInside(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  DC: TQtDeviceContext;
+  Painter: QPainterH;
+  QColorObj: QColorH;
+  QPenObj: QPenH;
+begin
+  if (C = nil) or (C.Handle = 0) then Exit;
+
+  DC := TQtDeviceContext(C.Handle);
+  Painter := DC.Widget;
+  if Painter = nil then Exit;
+
+  // classic inversion, so white color
+  QColorObj := QColor_Create();
+  QColor_setRgb(QColorObj, 255, 255, 255, 255);
+
+  QPenObj := QPen_Create(PQColor(QColorObj));
+  QPen_setWidth(QPenObj, 1);
+
+  QPainter_save(Painter);
+  try
+    QPainter_setCompositionMode(Painter, QPainterCompositionMode_Difference);
+    QPainter_setPen(Painter, QPenObj);
+    QPainter_setRenderHint(Painter, QPainterAntialiasing, False);
+
+    // top line
+    QPainter_drawLine(Painter, R.Left, R.Top, R.Right - 1, R.Top);
+    // bottom line
+    QPainter_drawLine(Painter, R.Left, R.Bottom - 1, R.Right - 1, R.Bottom - 1);
+    // left line
+    QPainter_drawLine(Painter, R.Left, R.Top + 1, R.Left, R.Bottom - 2);
+    // right line
+    QPainter_drawLine(Painter, R.Right - 1, R.Top + 1, R.Right - 1, R.Bottom - 2);
+  finally
+    QPainter_restore(Painter);
+  end;
+
+  QPen_Destroy(QPenObj);
+  QColor_Destroy(QColorObj);
+end;
+{$endif}
+
+//----------------------------------------
+// Generic slow implementation
+
+{$ifndef HAS_INV}
+procedure CanvasInvertRect(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  X: integer;
+  OldAntialias: TAntialiasingMode;
+  OldMode: TPenMode;
+  OldStyle: TPenStyle;
+  OldWidth: integer;
+  OldEndCap: TPenEndCap;
+begin
+  OldAntialias:= C.AntialiasingMode;
+  OldMode:= C.Pen.Mode;
+  OldStyle:= C.Pen.Style;
+  OldEndCap:= C.Pen.EndCap;
+  OldWidth:= C.Pen.Width;
+
+  X:= (R.Left+R.Right) div 2;
+  C.Pen.Mode:= {$if defined(LCLCocoa)} pmNot {$else} pmXor {$endif};
+  C.Pen.Style:= psSolid;
+  C.Pen.Color:= AColor;
+  C.AntialiasingMode:= amOff;
+  C.Pen.EndCap:= pecFlat;
+  C.Pen.Width:= R.Width;
+
+  C.MoveTo(X, R.Top);
+  C.LineTo(X, R.Bottom);
+
+  C.Pen.EndCap:= OldEndCap;
+  C.Pen.Width:= OldWidth;
+  C.Pen.Style:= OldStyle;
+  C.Pen.Mode:= OldMode;
+  C.AntialiasingMode:= OldAntialias;
+  C.Rectangle(0, 0, 0, 0); //apply pen
+end;
+{$endif}
+
+{$ifndef HAS_INV2}
+procedure CanvasInvertRectEmptyInside(C: TCanvas; const R: TRect; AColor: TColor);
+var
+  OldAntialias: TAntialiasingMode;
+  OldPenMode: TPenMode;
+  OldPenStyle: TPenStyle;
+  OldPenWidth: integer;
+  OldBrushStyle: TBrushStyle;
+begin
+  OldAntialias:= C.AntialiasingMode;
+  OldPenMode:= C.Pen.Mode;
+  OldPenStyle:= C.Pen.Style;
+  OldPenWidth:= C.Pen.Width;
+  OldBrushStyle:= C.Brush.Style;
+
+  C.Pen.Mode:= {$ifdef darwin} pmNot {$else} pmXor {$endif};
+  C.Pen.Style:= psSolid;
+  C.Pen.Color:= AColor;
+  C.AntialiasingMode:= amOff;
+  C.Pen.Width:= 1;
+  C.Brush.Style:= bsClear;
+
+  C.Rectangle(R);
+
+  C.Brush.Style:= OldBrushStyle;
+  C.Pen.Width:= OldPenWidth;
+  C.Pen.Style:= OldPenStyle;
+  C.Pen.Mode:= OldPenMode;
+  C.AntialiasingMode:= OldAntialias;
+  C.Rectangle(0, 0, 0, 0); //apply pen
+end;
+{$endif}
+
+end.

@@ -47,6 +47,12 @@ var
   ATStrings_PauseForUndoGroup: integer = 700;
   //if pause (in msec) between 2 actions is smaller, actions will be undone as a group
 
+const
+  ATStrings_MinUndoRunCount = 25;
+  //2026.09: performance fix. Minimum count of undo-items, which are undone in one
+  //bulk operation (UndoRun* functions). Runs of smaller size are undone with
+  //usual per-item code, to keep old behavior for typical small edits.
+
 type
   { TATUndoItem }
 
@@ -54,6 +60,10 @@ type
   private
     const PartSep = #9; //separators for AsString property
     const MarkersSep = #1;
+    const ArraysDisabledSpec = '-';
+      //2026.09 (issue #385): spec value of serialized undo-data, which marks all
+      //carets/markers arrays of the item as disabled; normal serialization never
+      //produces this char for those parts (arrays are digits/commas/semicolons)
     function GetAsString: string;
     procedure SetAsString(const AValue: string);
   public
@@ -77,6 +87,15 @@ type
     ItemAttribs: TATMarkerAttribArray; //attributes
     ItemSoftMark: boolean; //undo soft-mark. logic is described in ATSynEdit Wiki page
     ItemHardMark: boolean; //undo hard-mark
+    ItemArraysDisabled: boolean;
+      //2026.09 (issue #385): True = all carets/markers/attribs arrays of this item are
+      //disabled: they must be empty (nil) here, and undo/redo must not apply them,
+      //i.e. must NOT touch the current carets/markers/attribs of the editor.
+      //Bulk code (which saves many undo-items with identical captured arrays) stores
+      //real arrays only in the 1st created undo-item of the bulk run; all other items
+      //of the run get this flag. It gives big RAM saving for big runs, e.g. 10K items
+      //with M live markers/attribs keep only one O(M) copy instead of one per item.
+      //Serializer writes this state as ArraysDisabledSpec char, see GetAsString().
 
     constructor Create(AAction: TATEditAction; AIndex: integer;
       const AText: atString; AEnd: TATLineEnds; ALineState: TATLineState;
@@ -85,7 +104,11 @@ type
       const AMarkers, AMarkers2: TATMarkerMarkerArray;
       const AAttribs: TATMarkerAttribArray;
       ACommandCode: integer;
-      const ATickCount: QWord); virtual;
+      const ATickCount: QWord;
+      AArraysDisabled: boolean = false); virtual;
+      //AArraysDisabled (2026.09, issue #385): True = created item has empty (nil)
+      //carets/markers/attribs arrays with ItemArraysDisabled=True, passed arrays are
+      //ignored. Used by bulk paths for all items except the 1st one of a bulk run.
     constructor CreateEmpty;
     procedure Assign(const D: TATUndoItem);
     property AsString: string read GetAsString write SetAsString;
@@ -126,13 +149,30 @@ type
     procedure DeleteLast;
     procedure DeleteUnmodifiedMarks;
     procedure DeleteTrailingCaretJumps;
+
     procedure Add(AAction: TATEditAction; AIndex: integer; const AText: atString;
       AEnd: TATLineEnds; ALineState: TATLineState;
       const ACarets, ACarets2: TATPointPairArray;
       const AMarkers, AMarkers2: TATMarkerMarkerArray;
       const AAttribs: TATMarkerAttribArray;
       ACommandCode: integer;
-      AUndoOrRedo: TATEditorRunningUndoOrRedo);
+      AUndoOrRedo: TATEditorRunningUndoOrRedo;
+      AArraysDisabled: boolean = false);
+
+    //2026.09.12 (CudaText perf): bulk version of Add() for the N identical
+    //placeholder undo-items of a block-insert (LineBlockInsertEnds): one
+    //TATEditAction.Insert item per line, same index, empty text, same arrays.
+    //Creates exactly the items N sequential Add() calls would create (same
+    //fields, same order); the tick is sampled every 1024 items - sequential
+    //Add() samples per item, but items of one command differ only when a
+    //pause >= ATStrings_PauseForUndoGroup occurs mid-run, which the periodic
+    //sampling preserves (within 1024 items)
+    procedure AddInsertRun(AIndex: integer; ACount: SizeInt;
+      ACommandCode: integer;
+      const ACarets, ACarets2: TATPointPairArray;
+      const AMarkers, AMarkers2: TATMarkerMarkerArray;
+      const AAttribs: TATMarkerAttribArray);
+
     procedure AddUnmodifiedMark;
     function DebugText: string;
     function IsEmpty: boolean;
@@ -155,22 +195,49 @@ uses
 
 function TATUndoItem.GetAsString: string;
 //if more data will be needed here, add it to 'carets' item after MarkersSep=#1 separator
+var
+  S: UnicodeString;
+  SCarets, SCarets2, SMarkers, SMarkers2: string;
+  i: SizeInt;
 begin
+  S:= ItemText;
+
+  //replace CR LF chars, to not corrupt undo-data saved to a file, then loaded from a file
+  if SStringHasEol(S) then
+    for i:= 1 to Length(S) do
+      if (S[i]=#10) or (S[i]=#13) then
+        S[i]:= ' ';
+
+  if ItemArraysDisabled then
+  begin
+    SCarets:= ArraysDisabledSpec;
+    SCarets2:= ArraysDisabledSpec;
+    SMarkers:= ArraysDisabledSpec;
+    SMarkers2:= ArraysDisabledSpec;
+  end
+  else
+  begin
+    SCarets:= PointPairArrayToString(ItemCarets);
+    SCarets2:= PointPairArrayToString(ItemCarets2);
+    SMarkers:= MarkerArrayToString(ItemMarkers);
+    SMarkers2:= MarkerArrayToString(ItemMarkers2);
+  end;
+
   Result:=
     IntToStr(Ord(ItemAction))+PartSep+
     IntToStr(ItemIndex)+PartSep+
     IntToStr(Ord(ItemEnd))+PartSep+
     IntToStr(Ord(ItemLineState))+PartSep+
-    PointPairArrayToString(ItemCarets)+MarkersSep+
-      MarkerArrayToString(ItemMarkers)+MarkersSep+
+    SCarets+MarkersSep+
+      SMarkers+MarkersSep+
       IntToStr(ItemGlobalCounter)+MarkersSep+
       IntToStr(ItemTickCount)+MarkersSep+
       IntToStr(ItemCommandCode)+MarkersSep+
-      PointPairArrayToString(ItemCarets2)+MarkersSep+
-      MarkerArrayToString(ItemMarkers2)+PartSep+
+      SCarets2+MarkersSep+
+      SMarkers2+PartSep+
     IntToStr(Ord(ItemSoftMark))+PartSep+
     IntToStr(Ord(ItemHardMark))+PartSep+
-    UTF8Encode(ItemText);
+    UTF8Encode(S);
 end;
 
 procedure TATUndoItem.SetAsString(const AValue: string);
@@ -180,6 +247,8 @@ var
   N: integer;
 begin
   Sep.Init(AValue, PartSep);
+
+  ItemArraysDisabled:= false;
 
   Sep.GetItemInt(N, 0);
   ItemAction:= TATEditAction(N);
@@ -199,9 +268,21 @@ begin
   Sep2.Init(S, MarkersSep);
   //a) carets
   Sep2.GetItemStr(SubItem);
-  StringToPointPairArray(ItemCarets, SubItem);
+  if SubItem=ArraysDisabledSpec then
+  begin
+    ItemCarets:= nil;
+    ItemArraysDisabled:= true;
+  end
+  else
+    StringToPointPairArray(ItemCarets, SubItem);
   //b) markers
   Sep2.GetItemStr(SubItem);
+  if SubItem=ArraysDisabledSpec then
+  begin
+    ItemMarkers:= nil;
+    ItemArraysDisabled:= true;
+  end
+  else
   if SubItem<>'' then
     StringToMarkerArray(ItemMarkers, SubItem)
   else
@@ -215,9 +296,21 @@ begin
   Sep2.GetItemInt(ItemCommandCode, 0);
   //f) carets2
   Sep2.GetItemStr(SubItem);
-  StringToPointPairArray(ItemCarets2, SubItem);
+  if SubItem=ArraysDisabledSpec then
+  begin
+    ItemCarets2:= nil;
+    ItemArraysDisabled:= true;
+  end
+  else
+    StringToPointPairArray(ItemCarets2, SubItem);
   //g) markers2
   Sep2.GetItemStr(SubItem);
+  if SubItem=ArraysDisabledSpec then
+  begin
+    ItemMarkers2:= nil;
+    ItemArraysDisabled:= true;
+  end
+  else
   if SubItem<>'' then
     StringToMarkerArray(ItemMarkers2, SubItem)
   else
@@ -229,7 +322,7 @@ begin
   Sep.GetItemStr(S);
   ItemHardMark:= S='1';
 
-  //use Sep.GetRect for last item, because line can contain tab-chars
+  //use Sep.GetRest for last item, because line can contain tab-chars
   Sep.GetRest(S);
   ItemText:= UTF8Decode(S);
 end;
@@ -245,6 +338,7 @@ begin
   ItemCarets2:= D.ItemCarets2;
   ItemSoftMark:= D.ItemSoftMark;
   ItemHardMark:= D.ItemHardMark;
+  ItemArraysDisabled:= D.ItemArraysDisabled;
   ItemCommandCode:= D.ItemCommandCode;
   ItemTickCount:= D.ItemTickCount;
   ItemGlobalCounter:= D.ItemGlobalCounter;
@@ -258,9 +352,8 @@ constructor TATUndoItem.Create(AAction: TATEditAction; AIndex: integer;
   const AMarkers, AMarkers2: TATMarkerMarkerArray;
   const AAttribs: TATMarkerAttribArray;
   ACommandCode: integer;
-  const ATickCount: QWord);
-var
-  i: integer;
+  const ATickCount: QWord;
+  AArraysDisabled: boolean);
 begin
   ItemAction:= AAction;
   ItemIndex:= AIndex;
@@ -272,26 +365,37 @@ begin
   ItemCommandCode:= ACommandCode;
   ItemTickCount:= ATickCount;
   ItemGlobalCounter:= 0;
+  ItemArraysDisabled:= AArraysDisabled;
 
-  SetLength(ItemCarets, Length(ACarets));
-  for i:= 0 to High(ACarets) do
-    ItemCarets[i]:= ACarets[i];
-
-  SetLength(ItemCarets2, Length(ACarets2));
-  for i:= 0 to High(ACarets2) do
-    ItemCarets2[i]:= ACarets2[i];
-
-  SetLength(ItemMarkers, Length(AMarkers));
-  for i:= 0 to High(AMarkers) do
-    ItemMarkers[i]:= AMarkers[i];
-
-  SetLength(ItemMarkers2, Length(AMarkers2));
-  for i:= 0 to High(AMarkers2) do
-    ItemMarkers2[i]:= AMarkers2[i];
-
-  SetLength(ItemAttribs, Length(AAttribs));
-  for i:= 0 to High(AAttribs) do
-    ItemAttribs[i]:= AAttribs[i];
+  if AArraysDisabled then
+  begin
+    //2026.09 (issue #385): all arrays must be empty in a disabled item;
+    //passed arrays are ignored, so callers may pass any values
+    ItemCarets:= nil;
+    ItemCarets2:= nil;
+    ItemMarkers:= nil;
+    ItemMarkers2:= nil;
+    ItemAttribs:= nil;
+  end
+  else
+  {
+  if AShareArrays then
+  begin
+    ItemCarets:= ACarets;
+    ItemCarets2:= ACarets2;
+    ItemMarkers:= AMarkers;
+    ItemMarkers2:= AMarkers2;
+    ItemAttribs:= AAttribs;
+  end
+  else
+  }
+  begin
+    ItemCarets:= Copy(ACarets);
+    ItemCarets2:= Copy(ACarets2);
+    ItemMarkers:= Copy(AMarkers);
+    ItemMarkers2:= Copy(AMarkers2);
+    ItemAttribs:= Copy(AAttribs);
+  end;
 end;
 
 constructor TATUndoItem.CreateEmpty;
@@ -379,7 +483,8 @@ procedure TATUndoList.Add(AAction: TATEditAction; AIndex: integer;
   const AMarkers, AMarkers2: TATMarkerMarkerArray;
   const AAttribs: TATMarkerAttribArray;
   ACommandCode: integer;
-  AUndoOrRedo: TATEditorRunningUndoOrRedo);
+  AUndoOrRedo: TATEditorRunningUndoOrRedo;
+  AArraysDisabled: boolean);
 var
   Item: TATUndoItem;
   NewTick: QWord;
@@ -435,7 +540,8 @@ begin
                             AMarkers2,
                             AAttribs,
                             ACommandCode,
-                            NewTick);
+                            NewTick,
+                            AArraysDisabled);
   Item.ItemGlobalCounter:= NGlobalCounter;
 
   FList.Add(Item);
@@ -448,23 +554,120 @@ begin
 end;
 
 
+procedure TATUndoList.AddInsertRun(AIndex: integer; ACount: SizeInt;
+  ACommandCode: integer;
+  const ACarets, ACarets2: TATPointPairArray;
+  const AMarkers, AMarkers2: TATMarkerMarkerArray;
+  const AAttribs: TATMarkerAttribArray);
+{
+2026.09.12 (CudaText perf): see the interface comment. Mirrors the statements
+of Add() for the Insert-placeholder case (empty text, NotUndoRedo):
+- command-mark counter: computed once (Add() reads Last.ItemGlobalCounter
+  before each item, but items of this run share the counter, so the value
+  stays the same);
+- FSoftMark/FHardMark: read per item like Add() does; FSoftMark turns false
+  after the first item, exactly like sequential Add() calls;
+- GetTickCount64: sampled per 1024 items (see interface comment);
+- duplicate-change check of Add() never applies (action=Insert);
+- MaxCount trimming: run once at the end (all items share the counter).
+}
+var
+  Item: TATUndoItem;
+  NGlobalCounter: DWord;
+  NCounterFirst, NCounterRest: DWord;
+  NewTick: QWord;
+  i: SizeInt;
+begin
+  if FLocked then Exit;
+  if FMaxCount=0 then Exit;
+  if ACount<=0 then Exit;
+
+  //command-mark counter, mirroring sequential Add() exactly:
+  //- list not empty: all items get Last.Counter (+1 when the mark is set,
+  //  consumed by the first Add);
+  //- list empty: item 1 gets 0 and does NOT consume the mark (Add() reads
+  //  the counter only when bNotEmpty), item 2 consumes it -> items 2..N
+  //  get 1 (0 when no mark)
+  if Count>0 then
+  begin
+    NGlobalCounter:= Last.ItemGlobalCounter;
+    if FNewCommandMark then
+    begin
+      FNewCommandMark:= false;
+      Inc(NGlobalCounter);
+    end;
+    NCounterFirst:= NGlobalCounter;
+    NCounterRest:= NGlobalCounter;
+  end
+  else
+  begin
+    NCounterFirst:= 0;
+    if FNewCommandMark then
+    begin
+      FNewCommandMark:= false;
+      NCounterRest:= 1;
+    end
+    else
+      NCounterRest:= 0;
+  end;
+
+  if Capacity < Count+ACount then
+    Capacity:= Count+ACount;
+
+  NewTick:= GetTickCount64;
+  if (FLastTick>0) and (NewTick-FLastTick>=ATStrings_PauseForUndoGroup) then
+    FSoftMark:= true;
+  FLastTick:= NewTick;
+
+  for i:= 1 to ACount do
+  begin
+    if (i>1) and ((i and 1023)=0) then
+    begin
+      //periodic tick sampling: a long pause inside the loop must set the
+      //soft mark, like per-item Add() would do
+      NewTick:= GetTickCount64;
+      if NewTick-FLastTick>=ATStrings_PauseForUndoGroup then
+      begin
+        FSoftMark:= true;
+        FLastTick:= NewTick;
+      end;
+    end;
+    if i=1 then
+      NGlobalCounter:= NCounterFirst
+    else
+      NGlobalCounter:= NCounterRest;
+    Item:= TATUndoItem.Create(TATEditAction.Insert, AIndex, '', TATLineEnds.None,
+      TATLineState.None, FSoftMark, FHardMark,
+      ACarets, ACarets2, AMarkers, AMarkers2, AAttribs,
+      ACommandCode, NewTick,
+      (i>1){AArraysDisabled, issue #385: real arrays are stored only in the 1st item of the run});
+    Item.ItemGlobalCounter:= NGlobalCounter;
+    FList.Add(Item);
+    FSoftMark:= false;
+  end;
+
+  //support MaxCount _actions_ in the list, intead of MaxCount simple items
+  //CudaText issue #3084
+  if Count>0 then
+    while (NGlobalCounter-Items[0].ItemGlobalCounter)>MaxCount do
+      Delete(0);
+end;
+
+
 procedure TATUndoList.AddUnmodifiedMark;
 var
   Item: TATUndoItem;
-  Carets: TATPointPairArray;
-  Markers: TATMarkerMarkerArray;
-  Attribs: TATMarkerAttribArray;
+  TempCarets: TATPointPairArray = nil;
+  TempMarkers: TATMarkerMarkerArray = nil;
+  TempAttribs: TATMarkerAttribArray = nil;
 begin
-  //if FLocked then exit; //on load file called with Locked=true
+  ////on load file called with Locked=true
+  //if FLocked then exit;
 
-  //don't do two marks
+  //don't make two ClearModified items
   Item:= Last;
   if Assigned(Item) then
     if Item.ItemAction=TATEditAction.ClearModified then exit;
-
-  Carets:= nil;
-  Markers:= nil;
-  Attribs:= nil;
 
   Item:= TATUndoItem.Create(
     TATEditAction.ClearModified,
@@ -474,14 +677,15 @@ begin
     TATLineState.None,
     false,
     false,
-    Carets,
-    Carets, //2nd carets
-    Markers,
-    Markers, //2nd markers
-    Attribs,
+    TempCarets,
+    TempCarets, //2nd carets
+    TempMarkers,
+    TempMarkers, //2nd markers
+    TempAttribs,
     0,
-    0
-    );
+    0,
+    true);
+
   FList.Add(Item);
 end;
 
